@@ -1,1361 +1,983 @@
-﻿/* ============================================================
-   FILE: main.js
-   MỤC ĐÍCH: Logic chính cho ứng dụng WebGIS Bắc Giang
-   CÔNG NGHỆ: OpenLayers 9
-   TÁC GIẢ: WebGIS Bắc Giang Team
-   ============================================================ */
+﻿/**
+ * WebGIS Bắc Giang — main.js
+ * Sử dụng dữ liệu GeoJSON nhúng trực tiếp (không cần GeoServer/WMS/WFS)
+ * Chỉ cần mở index.html bằng Live Server là chạy được
+ */
 
 'use strict';
 
-/* ============================================================
-   CẤU HÌNH TOÀN CỤC — Thay đổi URL GeoServer tại đây
-   ============================================================ */
-const GEOSERVER_URL = 'http://localhost:8080/geoserver';
-const WORKSPACE     = 'bacgiang';
-const WMS_URL       = `${GEOSERVER_URL}/${WORKSPACE}/wms`;
-const WFS_URL       = `${GEOSERVER_URL}/${WORKSPACE}/wfs`;
+// ============================================================
+// CẤU HÌNH CHUNG
+// ============================================================
+const BAC_GIANG_CENTER = [106.1943, 21.2731]; // Tọa độ trung tâm TP. Bắc Giang
+const DEFAULT_ZOOM = 10;                       // Mức zoom mặc định
 
-// Tọa độ trung tâm tỉnh Bắc Giang (kinh độ, vĩ độ — WGS84)
-const BAC_GIANG_CENTER = [106.1943, 21.2731];
-const DEFAULT_ZOOM     = 10;
-
-/* ============================================================
-   BIẾN TOÀN CỤC
-   ============================================================ */
-let map;                    // Đối tượng bản đồ chính
-let popupOverlay;           // Overlay hiển thị popup
-let currentFeatureCoord;    // Tọa độ đối tượng đang được chọn
-let currentFeatureBbox;     // Bounding box đối tượng đang được chọn
-let measureActive = false;  // Trạng thái công cụ đo
-let measureSource;          // Nguồn dữ liệu đo
-let measureLayer;           // Layer đo khoảng cách
-let measureListener;        // Listener sự kiện đo
-
-/* ============================================================
-   KHỞI TẠO CÁC LỚP BẢN ĐỒ NỀN (BASE MAPS)
-   ============================================================ */
-
-// Lớp OpenStreetMap — bản đồ đường phố mặc định
-const layerOSM = new ol.layer.Tile({
-  source: new ol.source.OSM(),
-  visible: true,
-  properties: { name: 'osm' }
-});
-
-// Lớp ảnh vệ tinh Esri — ảnh vệ tinh độ phân giải cao
-const layerSatellite = new ol.layer.Tile({
-  source: new ol.source.XYZ({
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-    attributions: 'Tiles © Esri — Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
-    maxZoom: 19
-  }),
-  visible: false,
-  properties: { name: 'satellite' }
-});
-
-// Lớp địa hình OpenTopoMap — hiển thị địa hình, độ cao
-const layerTopo = new ol.layer.Tile({
-  source: new ol.source.XYZ({
-    url: 'https://{a-c}.tile.opentopomap.org/{z}/{x}/{y}.png',
-    attributions: 'Map data: © <a href="https://openstreetmap.org/copyright">OpenStreetMap</a> contributors, <a href="http://viewfinderpanoramas.org">SRTM</a> | Map style: © <a href="https://opentopomap.org">OpenTopoMap</a>',
-    maxZoom: 17
-  }),
-  visible: false,
-  properties: { name: 'topo' }
-});
-
-/* ============================================================
-   KHỞI TẠO CÁC LỚP WMS TỪ GEOSERVER
-   ============================================================ */
-
-// Lớp ranh giới hành chính Bắc Giang (polygon)
-const wmsLayerBacgiang = new ol.layer.Image({
-  source: new ol.source.ImageWMS({
-    url: WMS_URL,
-    params: {
-      'LAYERS': `${WORKSPACE}:bacgiang`,
-      'TILED': true,
-      'FORMAT': 'image/png',
-      'TRANSPARENT': true
-    },
-    ratio: 1,
-    serverType: 'geoserver'
-  }),
-  opacity: 0.7,
-  visible: true,
-  properties: { name: 'bacgiang', title: 'Hành chính' }
-});
-
-// Lớp trường học (point)
-const wmsLayerTruonghoc = new ol.layer.Image({
-  source: new ol.source.ImageWMS({
-    url: WMS_URL,
-    params: {
-      'LAYERS': `${WORKSPACE}:truonghoc`,
-      'TILED': true,
-      'FORMAT': 'image/png',
-      'TRANSPARENT': true
-    },
-    ratio: 1,
-    serverType: 'geoserver'
-  }),
-  opacity: 1.0,
-  visible: true,
-  properties: { name: 'truonghoc', title: 'Trường học' }
-});
-
-// Lớp giao thông (line)
-const wmsLayerGiaothong = new ol.layer.Image({
-  source: new ol.source.ImageWMS({
-    url: WMS_URL,
-    params: {
-      'LAYERS': `${WORKSPACE}:giaothong`,
-      'TILED': true,
-      'FORMAT': 'image/png',
-      'TRANSPARENT': true
-    },
-    ratio: 1,
-    serverType: 'geoserver'
-  }),
-  opacity: 1.0,
-  visible: true,
-  properties: { name: 'giaothong', title: 'Giao thông' }
-});
-
-// Ánh xạ tên layer → đối tượng layer WMS (dùng cho các hàm tiện ích)
-const wmsLayers = {
-  bacgiang:  wmsLayerBacgiang,
-  truonghoc: wmsLayerTruonghoc,
-  giaothong: wmsLayerGiaothong
+// ============================================================
+// DỮ LIỆU GEOJSON NHÚNG — TRƯỜNG HỌC (20 điểm)
+// ============================================================
+const TRUONGHOC_GEOJSON = {
+  "type": "FeatureCollection",
+  "features": [
+    {"type":"Feature","properties":{"id":1,"ten":"Trường THPT Ngô Sĩ Liên","loai":"THPT","diachi":"Số 2 Nguyễn Thị Minh Khai, TP. Bắc Giang","huyen":"TP. Bắc Giang","sdt":"0204.3854.123","so_hoc_sinh":1850},"geometry":{"type":"Point","coordinates":[106.1943,21.2731]}},
+    {"type":"Feature","properties":{"id":2,"ten":"Trường THPT Bắc Giang","loai":"THPT","diachi":"Đường Hoàng Văn Thụ, TP. Bắc Giang","huyen":"TP. Bắc Giang","sdt":"0204.3854.456","so_hoc_sinh":1650},"geometry":{"type":"Point","coordinates":[106.1978,21.2698]}},
+    {"type":"Feature","properties":{"id":3,"ten":"Trường THCS Lê Quý Đôn","loai":"THCS","diachi":"Phường Trần Phú, TP. Bắc Giang","huyen":"TP. Bắc Giang","sdt":"0204.3854.789","so_hoc_sinh":980},"geometry":{"type":"Point","coordinates":[106.1921,21.2756]}},
+    {"type":"Feature","properties":{"id":4,"ten":"Trường Tiểu học Hoàng Văn Thụ","loai":"Tiểu học","diachi":"Phường Hoàng Văn Thụ, TP. Bắc Giang","huyen":"TP. Bắc Giang","sdt":"0204.3854.321","so_hoc_sinh":750},"geometry":{"type":"Point","coordinates":[106.1965,21.2712]}},
+    {"type":"Feature","properties":{"id":5,"ten":"Trường Đại học Bắc Giang","loai":"Đại học","diachi":"Số 4 Lê Lợi, TP. Bắc Giang","huyen":"TP. Bắc Giang","sdt":"0204.3854.000","so_hoc_sinh":5200},"geometry":{"type":"Point","coordinates":[106.2012,21.2680]}},
+    {"type":"Feature","properties":{"id":6,"ten":"Trường THPT Lạng Giang số 1","loai":"THPT","diachi":"TT. Vôi, Huyện Lạng Giang","huyen":"Lạng Giang","sdt":"0204.3861.100","so_hoc_sinh":1200},"geometry":{"type":"Point","coordinates":[106.2534,21.3012]}},
+    {"type":"Feature","properties":{"id":7,"ten":"Trường THCS Lạng Giang","loai":"THCS","diachi":"TT. Vôi, Huyện Lạng Giang","huyen":"Lạng Giang","sdt":"0204.3861.200","so_hoc_sinh":820},"geometry":{"type":"Point","coordinates":[106.2498,21.2989]}},
+    {"type":"Feature","properties":{"id":8,"ten":"Trường Tiểu học Thị trấn Vôi","loai":"Tiểu học","diachi":"TT. Vôi, Huyện Lạng Giang","huyen":"Lạng Giang","sdt":"0204.3861.300","so_hoc_sinh":560},"geometry":{"type":"Point","coordinates":[106.2512,21.3034]}},
+    {"type":"Feature","properties":{"id":9,"ten":"Trường THPT Lục Nam","loai":"THPT","diachi":"TT. Đồi Ngô, Huyện Lục Nam","huyen":"Lục Nam","sdt":"0204.3862.100","so_hoc_sinh":1100},"geometry":{"type":"Point","coordinates":[106.3421,21.3156]}},
+    {"type":"Feature","properties":{"id":10,"ten":"Trường THCS Đồi Ngô","loai":"THCS","diachi":"TT. Đồi Ngô, Huyện Lục Nam","huyen":"Lục Nam","sdt":"0204.3862.200","so_hoc_sinh":740},"geometry":{"type":"Point","coordinates":[106.3398,21.3178]}},
+    {"type":"Feature","properties":{"id":11,"ten":"Trường THPT Yên Thế","loai":"THPT","diachi":"TT. Cầu Gồ, Huyện Yên Thế","huyen":"Yên Thế","sdt":"0204.3863.100","so_hoc_sinh":950},"geometry":{"type":"Point","coordinates":[106.0823,21.4234]}},
+    {"type":"Feature","properties":{"id":12,"ten":"Trường THCS Cầu Gồ","loai":"THCS","diachi":"TT. Cầu Gồ, Huyện Yên Thế","huyen":"Yên Thế","sdt":"0204.3863.200","so_hoc_sinh":680},"geometry":{"type":"Point","coordinates":[106.0801,21.4256]}},
+    {"type":"Feature","properties":{"id":13,"ten":"Trường THPT Hiệp Hòa số 1","loai":"THPT","diachi":"TT. Thắng, Huyện Hiệp Hòa","huyen":"Hiệp Hòa","sdt":"0204.3864.100","so_hoc_sinh":1300},"geometry":{"type":"Point","coordinates":[105.9234,21.3567]}},
+    {"type":"Feature","properties":{"id":14,"ten":"Trường Tiểu học Thắng","loai":"Tiểu học","diachi":"TT. Thắng, Huyện Hiệp Hòa","huyen":"Hiệp Hòa","sdt":"0204.3864.200","so_hoc_sinh":620},"geometry":{"type":"Point","coordinates":[105.9256,21.3589]}},
+    {"type":"Feature","properties":{"id":15,"ten":"Trường THPT Việt Yên số 1","loai":"THPT","diachi":"TT. Bích Động, Huyện Việt Yên","huyen":"Việt Yên","sdt":"0204.3865.100","so_hoc_sinh":1400},"geometry":{"type":"Point","coordinates":[106.0512,21.2934]}},
+    {"type":"Feature","properties":{"id":16,"ten":"Trường THCS Bích Động","loai":"THCS","diachi":"TT. Bích Động, Huyện Việt Yên","huyen":"Việt Yên","sdt":"0204.3865.200","so_hoc_sinh":890},"geometry":{"type":"Point","coordinates":[106.0489,21.2956]}},
+    {"type":"Feature","properties":{"id":17,"ten":"Trường THPT Tân Yên số 1","loai":"THPT","diachi":"TT. Cao Thượng, Huyện Tân Yên","huyen":"Tân Yên","sdt":"0204.3866.100","so_hoc_sinh":1050},"geometry":{"type":"Point","coordinates":[106.0934,21.3789]}},
+    {"type":"Feature","properties":{"id":18,"ten":"Trường THPT Sơn Động số 1","loai":"THPT","diachi":"TT. An Châu, Huyện Sơn Động","huyen":"Sơn Động","sdt":"0204.3867.100","so_hoc_sinh":780},"geometry":{"type":"Point","coordinates":[106.8234,21.3456]}},
+    {"type":"Feature","properties":{"id":19,"ten":"Trường THPT Lục Ngạn số 1","loai":"THPT","diachi":"TT. Chũ, Huyện Lục Ngạn","huyen":"Lục Ngạn","sdt":"0204.3868.100","so_hoc_sinh":1150},"geometry":{"type":"Point","coordinates":[106.5123,21.3678]}},
+    {"type":"Feature","properties":{"id":20,"ten":"Trường THCS Chũ","loai":"THCS","diachi":"TT. Chũ, Huyện Lục Ngạn","huyen":"Lục Ngạn","sdt":"0204.3868.200","so_hoc_sinh":760},"geometry":{"type":"Point","coordinates":[106.5098,21.3701]}}
+  ]
 };
 
-/* ============================================================
-   KHỞI TẠO POPUP OVERLAY
-   ============================================================ */
+// ============================================================
+// DỮ LIỆU GEOJSON NHÚNG — GIAO THÔNG (12 tuyến đường)
+// ============================================================
+const GIAOTHONG_GEOJSON = {
+  "type": "FeatureCollection",
+  "features": [
+    {"type":"Feature","properties":{"id":1,"tenduong":"Quốc lộ 1A đoạn Bắc Giang","loaiduong":"Quốc lộ","chieudai":45.30,"chatluong":"Tốt","so_lane":4},"geometry":{"type":"LineString","coordinates":[[106.1234,21.1890],[106.1456,21.2234],[106.1678,21.2567],[106.1890,21.2890],[106.2012,21.3234],[106.2234,21.3567],[106.2456,21.3890]]}},
+    {"type":"Feature","properties":{"id":2,"tenduong":"Quốc lộ 31","loaiduong":"Quốc lộ","chieudai":62.50,"chatluong":"Tốt","so_lane":2},"geometry":{"type":"LineString","coordinates":[[106.1943,21.2731],[106.2567,21.3012],[106.3234,21.3345],[106.4012,21.3567],[106.5123,21.3678],[106.6234,21.3890],[106.7345,21.4012],[106.8234,21.3456]]}},
+    {"type":"Feature","properties":{"id":3,"tenduong":"Quốc lộ 37","loaiduong":"Quốc lộ","chieudai":38.70,"chatluong":"Trung bình","so_lane":2},"geometry":{"type":"LineString","coordinates":[[106.1943,21.2731],[106.1234,21.3234],[106.0567,21.3789],[105.9890,21.4234],[105.9234,21.4678]]}},
+    {"type":"Feature","properties":{"id":4,"tenduong":"Tỉnh lộ 295","loaiduong":"Tỉnh lộ","chieudai":18.40,"chatluong":"Tốt","so_lane":2},"geometry":{"type":"LineString","coordinates":[[106.1943,21.2731],[106.1234,21.2890],[106.0567,21.2956],[105.9890,21.2934]]}},
+    {"type":"Feature","properties":{"id":5,"tenduong":"Tỉnh lộ 293","loaiduong":"Tỉnh lộ","chieudai":22.60,"chatluong":"Tốt","so_lane":2},"geometry":{"type":"LineString","coordinates":[[106.1943,21.2731],[106.1012,21.3012],[106.0234,21.3234],[105.9567,21.3456],[105.9234,21.3567]]}},
+    {"type":"Feature","properties":{"id":6,"tenduong":"Tỉnh lộ 398","loaiduong":"Tỉnh lộ","chieudai":28.90,"chatluong":"Trung bình","so_lane":2},"geometry":{"type":"LineString","coordinates":[[106.2534,21.3012],[106.2890,21.3123],[106.3234,21.3156],[106.3421,21.3156]]}},
+    {"type":"Feature","properties":{"id":7,"tenduong":"Đường Lê Lợi","loaiduong":"Đường đô thị","chieudai":3.20,"chatluong":"Tốt","so_lane":4},"geometry":{"type":"LineString","coordinates":[[106.1834,21.2698],[106.1890,21.2712],[106.1943,21.2731],[106.2012,21.2756],[106.2067,21.2780]]}},
+    {"type":"Feature","properties":{"id":8,"tenduong":"Đường Hoàng Văn Thụ","loaiduong":"Đường đô thị","chieudai":2.80,"chatluong":"Tốt","so_lane":4},"geometry":{"type":"LineString","coordinates":[[106.1890,21.2645],[106.1921,21.2678],[106.1965,21.2712],[106.2012,21.2745]]}},
+    {"type":"Feature","properties":{"id":9,"tenduong":"Đường Yên Thế - Tân Yên","loaiduong":"Huyện lộ","chieudai":15.60,"chatluong":"Trung bình","so_lane":2},"geometry":{"type":"LineString","coordinates":[[106.0823,21.4234],[106.0934,21.4012],[106.0934,21.3789]]}},
+    {"type":"Feature","properties":{"id":10,"tenduong":"Đường Lục Ngạn - Sơn Động","loaiduong":"Huyện lộ","chieudai":42.30,"chatluong":"Kém","so_lane":2},"geometry":{"type":"LineString","coordinates":[[106.5123,21.3678],[106.6012,21.3567],[106.7012,21.3456],[106.8234,21.3456]]}},
+    {"type":"Feature","properties":{"id":11,"tenduong":"Cao tốc Hà Nội - Bắc Giang","loaiduong":"Cao tốc","chieudai":46.00,"chatluong":"Tốt","so_lane":6},"geometry":{"type":"LineString","coordinates":[[105.8234,21.1890],[105.9012,21.2123],[105.9890,21.2456],[106.0567,21.2678],[106.1234,21.2756],[106.1943,21.2731]]}},
+    {"type":"Feature","properties":{"id":12,"tenduong":"Tỉnh lộ 292","loaiduong":"Tỉnh lộ","chieudai":16.80,"chatluong":"Tốt","so_lane":2},"geometry":{"type":"LineString","coordinates":[[106.1943,21.2731],[106.2123,21.2890],[106.2345,21.3012],[106.2534,21.3012]]}}
+  ]
+};
 
-// Lấy phần tử DOM của popup
-const popupElement = document.getElementById('popup');
-
-// Tạo overlay để đặt popup lên bản đồ tại vị trí click
-popupOverlay = new ol.Overlay({
-  element: popupElement,
-  autoPan: {
-    animation: { duration: 250 }
-  },
-  positioning: 'bottom-center',
-  stopEvent: true,
-  offset: [0, -12]
-});
-
-/* ============================================================
-   KHỞI TẠO BẢN ĐỒ CHÍNH
-   ============================================================ */
-map = new ol.Map({
-  target: 'map',
-  // Thứ tự layer: base maps → WMS layers (từ dưới lên trên)
-  layers: [
-    layerOSM,
-    layerSatellite,
-    layerTopo,
-    wmsLayerBacgiang,
-    wmsLayerTruonghoc,
-    wmsLayerGiaothong
-  ],
-  overlays: [popupOverlay],
-  view: new ol.View({
-    // Chuyển tọa độ WGS84 sang EPSG:3857 (hệ tọa độ mặc định của OL)
-    center: ol.proj.fromLonLat(BAC_GIANG_CENTER),
-    zoom: DEFAULT_ZOOM,
-    minZoom: 7,
-    maxZoom: 19
-  }),
-  // Ẩn các control mặc định để dùng toolbar tùy chỉnh
-  controls: ol.control.defaults.defaults({
-    zoom: false,
-    rotate: false,
-    attribution: true
-  })
-});
-
-/* ============================================================
-   ẨN LOADING OVERLAY SAU KHI BẢN ĐỒ TẢI XONG
-   ============================================================ */
-map.once('rendercomplete', function () {
-  try {
-    const loadingOverlay = document.getElementById('loadingOverlay');
-    if (loadingOverlay) {
-      loadingOverlay.classList.add('hidden');
-    }
-  } catch (err) {
-    console.error('Lỗi khi ẩn loading overlay:', err);
-  }
-});
-
-// Dự phòng: ẩn loading sau 5 giây nếu sự kiện rendercomplete không kích hoạt
-setTimeout(function () {
-  try {
-    const loadingOverlay = document.getElementById('loadingOverlay');
-    if (loadingOverlay && !loadingOverlay.classList.contains('hidden')) {
-      loadingOverlay.classList.add('hidden');
-    }
-  } catch (err) {
-    console.error('Lỗi khi ẩn loading overlay (timeout):', err);
-  }
-}, 5000);
-
-/* ============================================================
-   HIỂN THỊ TỌA ĐỘ KHI DI CHUYỂN CHUỘT
-   ============================================================ */
-map.on('pointermove', function (evt) {
-  try {
-    // Chuyển tọa độ từ EPSG:3857 sang WGS84 (lon/lat)
-    const lonLat = ol.proj.toLonLat(evt.coordinate);
-    const lon = lonLat[0].toFixed(5);
-    const lat = lonLat[1].toFixed(5);
-    const coordDisplay = document.getElementById('coordDisplay');
-    if (coordDisplay) {
-      coordDisplay.textContent = `Tọa độ: ${lon}°E, ${lat}°N`;
-    }
-  } catch (err) {
-    console.error('Lỗi khi cập nhật tọa độ:', err);
-  }
-});
-
-/* ============================================================
-   HIỂN THỊ MỨC ZOOM KHI THAY ĐỔI
-   ============================================================ */
-map.getView().on('change:resolution', function () {
-  try {
-    const zoom = map.getView().getZoom();
-    const zoomDisplay = document.getElementById('zoomDisplay');
-    if (zoomDisplay) {
-      zoomDisplay.textContent = `Zoom: ${zoom ? zoom.toFixed(1) : '---'}`;
-    }
-  } catch (err) {
-    console.error('Lỗi khi cập nhật zoom:', err);
-  }
-});
-
-// Cập nhật zoom lần đầu khi bản đồ sẵn sàng
-map.once('postrender', function () {
-  try {
-    const zoom = map.getView().getZoom();
-    const zoomDisplay = document.getElementById('zoomDisplay');
-    if (zoomDisplay) {
-      zoomDisplay.textContent = `Zoom: ${zoom ? zoom.toFixed(1) : '---'}`;
-    }
-  } catch (err) {
-    console.error('Lỗi khi cập nhật zoom ban đầu:', err);
-  }
-});
-
-/* ============================================================
-   XỬ LÝ CLICK BẢN ĐỒ — GetFeatureInfo từ WMS
-   ============================================================ */
-map.on('singleclick', function (evt) {
-  // Nếu đang ở chế độ đo, không xử lý click popup
-  if (measureActive) return;
-
-  try {
-    // Lấy URL GetFeatureInfo cho từng layer WMS đang hiển thị
-    const viewResolution = map.getView().getResolution();
-    const coordinate = evt.coordinate;
-
-    // Xác định layer WMS nào đang bật để query
-    const activeLayers = [];
-    if (wmsLayerBacgiang.getVisible())  activeLayers.push({ layer: wmsLayerBacgiang,  name: 'bacgiang'  });
-    if (wmsLayerTruonghoc.getVisible()) activeLayers.push({ layer: wmsLayerTruonghoc, name: 'truonghoc' });
-    if (wmsLayerGiaothong.getVisible()) activeLayers.push({ layer: wmsLayerGiaothong, name: 'giaothong' });
-
-    if (activeLayers.length === 0) return;
-
-    // Ưu tiên query theo thứ tự: truonghoc → giaothong → bacgiang
-    const queryOrder = ['truonghoc', 'giaothong', 'bacgiang'];
-    const orderedLayers = queryOrder
-      .map(name => activeLayers.find(l => l.name === name))
-      .filter(Boolean);
-
-    // Thực hiện GetFeatureInfo tuần tự, dừng khi tìm thấy kết quả
-    queryLayersSequentially(orderedLayers, coordinate, viewResolution, evt);
-
-  } catch (err) {
-    console.error('Lỗi khi xử lý click bản đồ:', err);
-  }
-});
-
+// ============================================================
+// HÀM TẠO STYLE CHO LAYER TRƯỜNG HỌC
+// ============================================================
 /**
- * Query các layer WMS tuần tự, hiển thị popup cho layer đầu tiên có kết quả
- * @param {Array} layers - Danh sách layer cần query
- * @param {Array} coordinate - Tọa độ click (EPSG:3857)
- * @param {number} resolution - Độ phân giải hiện tại
- * @param {Object} evt - Sự kiện click
+ * Trả về ol.style.Style dựa trên loại trường và mức zoom hiện tại
+ * @param {ol.Feature} feature
+ * @param {number} resolution
+ * @returns {ol.style.Style}
  */
-async function queryLayersSequentially(layers, coordinate, resolution, evt) {
-  for (const { layer, name } of layers) {
-    try {
-      const url = layer.getSource().getFeatureInfoUrl(
-        coordinate,
-        resolution,
-        'EPSG:3857',
-        {
-          'INFO_FORMAT': 'application/json',
-          'FEATURE_COUNT': 1
-        }
-      );
+function styleTruonghoc(feature, resolution) {
+  const loai = feature.get('loai') || '';
+  const ten  = feature.get('ten')  || '';
 
-      if (!url) continue;
+  // Xác định màu sắc và kích thước theo loại trường
+  let fillColor = '#95A5A6';
+  let radius    = 8;
+  let shape     = 'circle'; // circle | square | triangle | star
 
-      const response = await fetch(url);
-      if (!response.ok) continue;
-
-      const data = await response.json();
-
-      if (data.features && data.features.length > 0) {
-        const feature = data.features[0];
-        currentFeatureCoord = coordinate;
-        currentFeatureBbox = feature.bbox || null;
-        showPopup(name, feature.properties, coordinate);
-        return; // Dừng sau khi tìm thấy kết quả đầu tiên
-      }
-    } catch (err) {
-      console.error(`Lỗi khi query layer ${name}:`, err);
-    }
+  switch (loai) {
+    case 'Đại học':
+      fillColor = '#8E44AD';
+      radius    = 14;
+      shape     = 'star';
+      break;
+    case 'THPT':
+      fillColor = '#E74C3C';
+      radius    = 12;
+      shape     = 'circle';
+      break;
+    case 'THCS':
+      fillColor = '#2980B9';
+      radius    = 10;
+      shape     = 'square';
+      break;
+    case 'Tiểu học':
+      fillColor = '#27AE60';
+      radius    = 10;
+      shape     = 'triangle';
+      break;
+    default:
+      fillColor = '#95A5A6';
+      radius    = 8;
+      shape     = 'circle';
   }
 
-  // Không tìm thấy đối tượng nào — đóng popup
-  hidePopup();
+  // Tạo hình dạng điểm
+  let imageStyle;
+  if (shape === 'circle' || shape === 'star') {
+    // Đại học dùng hình tròn lớn màu tím (RegularShape 5 cạnh = ngôi sao)
+    if (shape === 'star') {
+      imageStyle = new ol.style.RegularShape({
+        fill:   new ol.style.Fill({ color: fillColor }),
+        stroke: new ol.style.Stroke({ color: '#fff', width: 1.5 }),
+        points: 5,
+        radius:  radius,
+        radius2: radius / 2,
+        angle:   0
+      });
+    } else {
+      imageStyle = new ol.style.Circle({
+        radius: radius,
+        fill:   new ol.style.Fill({ color: fillColor }),
+        stroke: new ol.style.Stroke({ color: '#fff', width: 2 })
+      });
+    }
+  } else if (shape === 'square') {
+    imageStyle = new ol.style.RegularShape({
+      fill:   new ol.style.Fill({ color: fillColor }),
+      stroke: new ol.style.Stroke({ color: '#fff', width: 1.5 }),
+      points: 4,
+      radius: radius,
+      angle:  Math.PI / 4
+    });
+  } else if (shape === 'triangle') {
+    imageStyle = new ol.style.RegularShape({
+      fill:   new ol.style.Fill({ color: fillColor }),
+      stroke: new ol.style.Stroke({ color: '#fff', width: 1.5 }),
+      points: 3,
+      radius: radius,
+      angle:  0
+    });
+  }
+
+  // Hiển thị nhãn tên trường khi zoom >= 12 (resolution <= ~9.5 m/px ở EPSG:3857)
+  // resolution ~9.5 tương ứng zoom 12 trong EPSG:3857
+  const showLabel = resolution <= 9.6;
+  const textStyle = showLabel
+    ? new ol.style.Text({
+        text:         ten,
+        font:         'bold 11px "Be Vietnam Pro", sans-serif',
+        fill:         new ol.style.Fill({ color: '#222' }),
+        stroke:       new ol.style.Stroke({ color: '#fff', width: 3 }),
+        offsetY:      -(radius + 6),
+        textAlign:    'center',
+        overflow:     true
+      })
+    : undefined;
+
+  return new ol.style.Style({
+    image: imageStyle,
+    text:  textStyle
+  });
 }
 
+// ============================================================
+// HÀM TẠO STYLE CHO LAYER GIAO THÔNG
+// ============================================================
 /**
- * Hiển thị popup với thông tin đối tượng
- * @param {string} layerName - Tên layer ('bacgiang', 'truonghoc', 'giaothong')
- * @param {Object} props - Thuộc tính của đối tượng
- * @param {Array} coordinate - Tọa độ hiển thị popup
+ * Trả về ol.style.Style dựa trên loại đường và mức zoom hiện tại
+ * @param {ol.Feature} feature
+ * @param {number} resolution
+ * @returns {ol.style.Style|ol.style.Style[]}
  */
-function showPopup(layerName, props, coordinate) {
-  try {
-    const titleEl   = document.getElementById('popupTitle');
-    const contentEl = document.getElementById('popupContent');
-    const popupEl   = document.getElementById('popup');
+function styleGiaothong(feature, resolution) {
+  const loai    = feature.get('loaiduong') || '';
+  const tenduong = feature.get('tenduong') || '';
 
-    if (!titleEl || !contentEl || !popupEl) return;
+  let strokeColor   = '#999999';
+  let strokeWidth   = 2;
+  let lineDash      = null;
+  let outlineColor  = null;
+  let outlineWidth  = null;
 
-    let title   = 'Thông tin';
+  switch (loai) {
+    case 'Cao tốc':
+      strokeColor  = '#FF4444';
+      strokeWidth  = 5;
+      break;
+    case 'Quốc lộ':
+      strokeColor  = '#FF8C00';
+      strokeWidth  = 4;
+      break;
+    case 'Tỉnh lộ':
+      strokeColor  = '#FFD700';
+      strokeWidth  = 3;
+      outlineColor = '#B8860B';
+      outlineWidth = 4;
+      break;
+    case 'Đường đô thị':
+      strokeColor  = '#AAAAAA';
+      strokeWidth  = 2.5;
+      break;
+    case 'Huyện lộ':
+      strokeColor  = '#2E7D32';
+      strokeWidth  = 2;
+      lineDash     = [8, 4];
+      break;
+    default:
+      strokeColor  = '#999999';
+      strokeWidth  = 2;
+  }
+
+  // Hiển thị nhãn tên đường khi zoom >= 11 (resolution <= ~19 m/px)
+  const showLabel = resolution <= 19.1;
+  const textStyle = showLabel
+    ? new ol.style.Text({
+        text:       tenduong,
+        font:       '11px "Be Vietnam Pro", sans-serif',
+        fill:       new ol.style.Fill({ color: '#333' }),
+        stroke:     new ol.style.Stroke({ color: '#fff', width: 3 }),
+        placement:  'line',
+        overflow:   true
+      })
+    : undefined;
+
+  // Tỉnh lộ cần 2 lớp stroke (viền ngoài + màu chính)
+  if (outlineColor) {
+    return [
+      new ol.style.Style({
+        stroke: new ol.style.Stroke({ color: outlineColor, width: outlineWidth })
+      }),
+      new ol.style.Style({
+        stroke: new ol.style.Stroke({
+          color:    strokeColor,
+          width:    strokeWidth,
+          lineDash: lineDash || undefined
+        }),
+        text: textStyle
+      })
+    ];
+  }
+
+  return new ol.style.Style({
+    stroke: new ol.style.Stroke({
+      color:    strokeColor,
+      width:    strokeWidth,
+      lineDash: lineDash || undefined
+    }),
+    text: textStyle
+  });
+}
+
+// ============================================================
+// KHỞI TẠO ỨNG DỤNG — bọc trong try/catch
+// ============================================================
+try {
+
+  // ----------------------------------------------------------
+  // 1. CÁC LỚP BẢN ĐỒ NỀN (Base Layers)
+  // ----------------------------------------------------------
+
+  // OpenStreetMap (mặc định)
+  const layerOSM = new ol.layer.Tile({
+    source: new ol.source.OSM(),
+    visible: true
+  });
+
+  // Ảnh vệ tinh Esri
+  const layerSatellite = new ol.layer.Tile({
+    source: new ol.source.XYZ({
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      attributions: 'Tiles © Esri'
+    }),
+    visible: false
+  });
+
+  // Bản đồ địa hình OpenTopoMap
+  const layerTopo = new ol.layer.Tile({
+    source: new ol.source.XYZ({
+      url: 'https://{a-c}.tile.opentopomap.org/{z}/{x}/{y}.png',
+      attributions: '© OpenTopoMap contributors'
+    }),
+    visible: false
+  });
+
+  // ----------------------------------------------------------
+  // 2. LAYER VECTOR — GIAO THÔNG
+  // ----------------------------------------------------------
+  const sourceTruonghoc = new ol.source.Vector({
+    features: new ol.format.GeoJSON().readFeatures(TRUONGHOC_GEOJSON, {
+      // Dữ liệu GeoJSON dùng EPSG:4326, bản đồ dùng EPSG:3857
+      dataProjection:   'EPSG:4326',
+      featureProjection: 'EPSG:3857'
+    })
+  });
+
+  const vectorLayerTruonghoc = new ol.layer.Vector({
+    source: sourceTruonghoc,
+    style:  styleTruonghoc,
+    zIndex: 20  // Hiển thị trên cùng
+  });
+
+  // ----------------------------------------------------------
+  // 3. LAYER VECTOR — GIAO THÔNG
+  // ----------------------------------------------------------
+  const sourceGiaothong = new ol.source.Vector({
+    features: new ol.format.GeoJSON().readFeatures(GIAOTHONG_GEOJSON, {
+      dataProjection:   'EPSG:4326',
+      featureProjection: 'EPSG:3857'
+    })
+  });
+
+  const vectorLayerGiaothong = new ol.layer.Vector({
+    source: sourceGiaothong,
+    style:  styleGiaothong,
+    zIndex: 10
+  });
+
+  // ----------------------------------------------------------
+  // 4. POPUP OVERLAY
+  // ----------------------------------------------------------
+  const popupEl = document.getElementById('popup');
+
+  const popupOverlay = new ol.Overlay({
+    element:    popupEl,
+    positioning: 'bottom-center',
+    stopEvent:  true,
+    offset:     [0, -10]
+  });
+
+  // ----------------------------------------------------------
+  // 5. KHỞI TẠO BẢN ĐỒ
+  // ----------------------------------------------------------
+  const map = new ol.Map({
+    target: 'map',
+    layers: [
+      layerOSM,
+      layerSatellite,
+      layerTopo,
+      vectorLayerGiaothong,   // Giao thông bên dưới trường học
+      vectorLayerTruonghoc
+    ],
+    overlays: [popupOverlay],
+    view: new ol.View({
+      center: ol.proj.fromLonLat(BAC_GIANG_CENTER),
+      zoom:   DEFAULT_ZOOM
+    }),
+    controls: ol.control.defaults.defaults({
+      zoom:        false,  // Tự làm nút zoom riêng
+      attribution: true,
+      rotate:      false
+    })
+  });
+
+  // ----------------------------------------------------------
+  // 6. ẨN LOADING OVERLAY SAU KHI BẢN ĐỒ RENDER XONG
+  // ----------------------------------------------------------
+  map.once('rendercomplete', function () {
+    const overlay = document.getElementById('loadingOverlay');
+    if (overlay) {
+      overlay.style.opacity = '0';
+      setTimeout(() => { overlay.style.display = 'none'; }, 400);
+    }
+  });
+
+  // ----------------------------------------------------------
+  // 7. HIỂN THỊ TỌA ĐỘ VÀ ZOOM TRÊN THANH TRẠNG THÁI
+  // ----------------------------------------------------------
+  const coordDisplay = document.getElementById('coordDisplay');
+  const zoomDisplay  = document.getElementById('zoomDisplay');
+
+  // Cập nhật tọa độ khi di chuyển chuột
+  map.on('pointermove', function (evt) {
+    if (evt.dragging) return;
+    const lonlat = ol.proj.toLonLat(evt.coordinate);
+    const lon = lonlat[0].toFixed(5);
+    const lat = lonlat[1].toFixed(5);
+    if (coordDisplay) coordDisplay.textContent = `Tọa độ: ${lon}, ${lat}`;
+  });
+
+  // Cập nhật mức zoom khi thay đổi resolution
+  map.getView().on('change:resolution', function () {
+    const zoom = map.getView().getZoom();
+    if (zoomDisplay) zoomDisplay.textContent = `Zoom: ${zoom ? zoom.toFixed(1) : '--'}`;
+  });
+
+  // Hiển thị zoom ban đầu
+  if (zoomDisplay) zoomDisplay.textContent = `Zoom: ${DEFAULT_ZOOM}`;
+
+  // ----------------------------------------------------------
+  // 8. CHUYỂN ĐỔI BẢN ĐỒ NỀN (radio buttons)
+  // ----------------------------------------------------------
+  document.querySelectorAll('input[name="basemap"]').forEach(function (radio) {
+    radio.addEventListener('change', function () {
+      layerOSM.setVisible(this.value === 'osm');
+      layerSatellite.setVisible(this.value === 'satellite');
+      layerTopo.setVisible(this.value === 'topo');
+    });
+  });
+
+  // ----------------------------------------------------------
+  // 9. BẬT/TẮT LAYER QUA CHECKBOX
+  // ----------------------------------------------------------
+
+  // Checkbox trường học
+  const cbTruonghoc = document.getElementById('layerTruonghoc');
+  if (cbTruonghoc) {
+    cbTruonghoc.addEventListener('change', function () {
+      vectorLayerTruonghoc.setVisible(this.checked);
+    });
+  }
+
+  // Checkbox giao thông
+  const cbGiaothong = document.getElementById('layerGiaothong');
+  if (cbGiaothong) {
+    cbGiaothong.addEventListener('change', function () {
+      vectorLayerGiaothong.setVisible(this.checked);
+    });
+  }
+
+  // Checkbox hành chính (bacgiang) — không có layer vector, chỉ bỏ qua
+  const cbBacgiang = document.getElementById('layerBacgiang');
+  if (cbBacgiang) {
+    cbBacgiang.addEventListener('change', function () {
+      // Không có layer hành chính vector — hiển thị thông báo nhỏ
+      if (!this.checked) {
+        console.info('Layer hành chính chưa có dữ liệu GeoJSON.');
+      }
+    });
+  }
+
+  // ----------------------------------------------------------
+  // 10. POPUP KHI CLICK VÀO ĐỐI TƯỢNG
+  // ----------------------------------------------------------
+  let selectedFeature = null; // Lưu feature đang được chọn để zoom
+
+  map.on('singleclick', function (evt) {
+    // Ưu tiên tìm trường học trước, sau đó giao thông
+    let clickedFeature = null;
+    let clickedLayer   = null;
+
+    map.forEachFeatureAtPixel(evt.pixel, function (feature, layer) {
+      if (!clickedFeature) {
+        clickedFeature = feature;
+        clickedLayer   = layer;
+      }
+    }, {
+      layerFilter: function (layer) {
+        return layer === vectorLayerTruonghoc || layer === vectorLayerGiaothong;
+      },
+      hitTolerance: 6
+    });
+
+    if (!clickedFeature) {
+      // Không click vào feature nào → ẩn popup
+      popupEl.classList.add('hidden');
+      popupOverlay.setPosition(undefined);
+      selectedFeature = null;
+      return;
+    }
+
+    selectedFeature = clickedFeature;
+
+    // Xác định loại feature và tạo nội dung popup
+    const props = clickedFeature.getProperties();
+    let title   = '';
     let content = '';
 
-    if (layerName === 'bacgiang') {
-      // Thông tin hành chính: tên huyện và dân số
-      const name2      = props.name_2      || props.NAME_2      || 'Không rõ';
-      const population = props.population  || props.POPULATION  || 'Không rõ';
-      const type       = props.type_2      || props.TYPE_2      || '';
-      title = `<i class="fas fa-map-marker-alt" style="color:#7B1FA2;margin-right:6px;"></i>${name2}`;
+    if (clickedLayer === vectorLayerTruonghoc) {
+      // --- Popup trường học ---
+      title = props.ten || 'Trường học';
+
+      // Màu badge theo loại trường
+      const badgeColors = {
+        'Đại học':  '#8E44AD',
+        'THPT':     '#E74C3C',
+        'THCS':     '#2980B9',
+        'Tiểu học': '#27AE60'
+      };
+      const badgeColor = badgeColors[props.loai] || '#95A5A6';
+
       content = `
         <table class="popup-table">
-          <tr><td>Tên đơn vị</td><td><strong>${name2}</strong></td></tr>
-          <tr><td>Loại</td><td><span class="popup-badge badge-huyen">${type || 'Hành chính'}</span></td></tr>
-          <tr><td>Dân số</td><td>${formatNumber(population)} người</td></tr>
+          <tr>
+            <th>Loại trường</th>
+            <td><span class="popup-badge" style="background:${badgeColor}">${props.loai || '--'}</span></td>
+          </tr>
+          <tr>
+            <th>Địa chỉ</th>
+            <td>${props.diachi || '--'}</td>
+          </tr>
+          <tr>
+            <th>Huyện/TP</th>
+            <td>${props.huyen || '--'}</td>
+          </tr>
+          <tr>
+            <th>Điện thoại</th>
+            <td>${props.sdt || '--'}</td>
+          </tr>
+          <tr>
+            <th>Học sinh</th>
+            <td>${props.so_hoc_sinh ? props.so_hoc_sinh.toLocaleString('vi-VN') + ' em' : '--'}</td>
+          </tr>
         </table>`;
 
-    } else if (layerName === 'truonghoc') {
-      // Thông tin trường học
-      const ten          = props.ten          || props.TEN          || 'Không rõ';
-      const loai         = props.loai         || props.LOAI         || '';
-      const diachi       = props.diachi       || props.DIACHI       || '';
-      const soHocSinh    = props.so_hoc_sinh  || props.SO_HOC_SINH  || '';
-      title = `<i class="fas fa-school" style="color:#E65100;margin-right:6px;"></i>${ten}`;
-      const badgeClass   = getBadgeClass(loai);
-      content = `
-        <table class="popup-table">
-          <tr><td>Tên trường</td><td><strong>${ten}</strong></td></tr>
-          <tr><td>Loại trường</td><td><span class="popup-badge ${badgeClass}">${loai || 'Không rõ'}</span></td></tr>
-          <tr><td>Địa chỉ</td><td>${diachi || 'Không rõ'}</td></tr>
-          <tr><td>Học sinh</td><td>${formatNumber(soHocSinh)} em</td></tr>
-        </table>`;
+    } else if (clickedLayer === vectorLayerGiaothong) {
+      // --- Popup giao thông ---
+      title = props.tenduong || 'Tuyến đường';
 
-    } else if (layerName === 'giaothong') {
-      // Thông tin giao thông
-      const tenduong  = props.tenduong  || props.TENDUONG  || 'Không rõ';
-      const loaiduong = props.loaiduong || props.LOAIDUONG || '';
-      const chieudai  = props.chieudai  || props.CHIEUDAI  || '';
-      title = `<i class="fas fa-road" style="color:#1565C0;margin-right:6px;"></i>${tenduong}`;
-      const badgeClass = getBadgeClassDuong(loaiduong);
+      const roadBadgeColors = {
+        'Cao tốc':      '#FF4444',
+        'Quốc lộ':      '#FF8C00',
+        'Tỉnh lộ':      '#B8860B',
+        'Đường đô thị': '#888888',
+        'Huyện lộ':     '#2E7D32'
+      };
+      const badgeColor = roadBadgeColors[props.loaiduong] || '#666';
+
       content = `
         <table class="popup-table">
-          <tr><td>Tên đường</td><td><strong>${tenduong}</strong></td></tr>
-          <tr><td>Loại đường</td><td><span class="popup-badge ${badgeClass}">${loaiduong || 'Không rõ'}</span></td></tr>
-          <tr><td>Chiều dài</td><td>${chieudai ? formatNumber(chieudai) + ' km' : 'Không rõ'}</td></tr>
+          <tr>
+            <th>Loại đường</th>
+            <td><span class="popup-badge" style="background:${badgeColor}">${props.loaiduong || '--'}</span></td>
+          </tr>
+          <tr>
+            <th>Chiều dài</th>
+            <td>${props.chieudai ? props.chieudai.toFixed(1) + ' km' : '--'}</td>
+          </tr>
+          <tr>
+            <th>Chất lượng</th>
+            <td>${props.chatluong || '--'}</td>
+          </tr>
+          <tr>
+            <th>Số làn xe</th>
+            <td>${props.so_lane || '--'} làn</td>
+          </tr>
         </table>`;
     }
 
     // Cập nhật nội dung popup
-    titleEl.innerHTML   = title;
-    contentEl.innerHTML = content;
-
-    // Hiển thị popup và đặt vị trí trên bản đồ
+    document.getElementById('popupTitle').textContent   = title;
+    document.getElementById('popupContent').innerHTML   = content;
     popupEl.classList.remove('hidden');
-    popupOverlay.setPosition(coordinate);
 
-  } catch (err) {
-    console.error('Lỗi khi hiển thị popup:', err);
-  }
-}
-
-/** Ẩn popup */
-function hidePopup() {
-  try {
-    const popupEl = document.getElementById('popup');
-    if (popupEl) popupEl.classList.add('hidden');
-    popupOverlay.setPosition(undefined);
-    currentFeatureCoord = null;
-    currentFeatureBbox  = null;
-  } catch (err) {
-    console.error('Lỗi khi ẩn popup:', err);
-  }
-}
-
-/**
- * Trả về class CSS badge theo loại trường học
- * @param {string} loai - Loại trường
- * @returns {string} CSS class
- */
-function getBadgeClass(loai) {
-  if (!loai) return 'badge-huyen';
-  const l = loai.toLowerCase();
-  if (l.includes('đại học') || l.includes('dai hoc') || l.includes('cao đẳng')) return 'badge-daihoc';
-  if (l.includes('thpt') || l.includes('trung học phổ thông'))                   return 'badge-thpt';
-  if (l.includes('thcs') || l.includes('trung học cơ sở'))                       return 'badge-thcs';
-  if (l.includes('tiểu học') || l.includes('tieu hoc'))                          return 'badge-tieuhoc';
-  return 'badge-huyen';
-}
-
-/**
- * Trả về class CSS badge theo loại đường
- * @param {string} loai - Loại đường
- * @returns {string} CSS class
- */
-function getBadgeClassDuong(loai) {
-  if (!loai) return 'badge-dothi';
-  const l = loai.toLowerCase();
-  if (l.includes('cao tốc') || l.includes('cao toc'))   return 'badge-caotoc';
-  if (l.includes('quốc lộ') || l.includes('quoc lo'))   return 'badge-quoclo';
-  if (l.includes('tỉnh lộ') || l.includes('tinh lo'))   return 'badge-tinhlo';
-  if (l.includes('huyện lộ') || l.includes('huyen lo')) return 'badge-huyenlo';
-  if (l.includes('đô thị') || l.includes('do thi'))     return 'badge-dothi';
-  return 'badge-dothi';
-}
-
-/**
- * Định dạng số có dấu phân cách hàng nghìn
- * @param {number|string} num - Số cần định dạng
- * @returns {string} Chuỗi số đã định dạng
- */
-function formatNumber(num) {
-  if (num === null || num === undefined || num === '') return 'Không rõ';
-  const n = parseFloat(num);
-  if (isNaN(n)) return String(num);
-  return n.toLocaleString('vi-VN');
-}
-
-/* ============================================================
-   ĐIỀU KHIỂN LAYER — Toggle hiển thị/ẩn layer WMS
-   ============================================================ */
-
-// Lắng nghe sự kiện thay đổi checkbox layer hành chính
-document.getElementById('layerBacgiang').addEventListener('change', function () {
-  try {
-    wmsLayerBacgiang.setVisible(this.checked);
-  } catch (err) {
-    console.error('Lỗi khi toggle layer bacgiang:', err);
-  }
-});
-
-// Lắng nghe sự kiện thay đổi checkbox layer trường học
-document.getElementById('layerTruonghoc').addEventListener('change', function () {
-  try {
-    wmsLayerTruonghoc.setVisible(this.checked);
-  } catch (err) {
-    console.error('Lỗi khi toggle layer truonghoc:', err);
-  }
-});
-
-// Lắng nghe sự kiện thay đổi checkbox layer giao thông
-document.getElementById('layerGiaothong').addEventListener('change', function () {
-  try {
-    wmsLayerGiaothong.setVisible(this.checked);
-  } catch (err) {
-    console.error('Lỗi khi toggle layer giaothong:', err);
-  }
-});
-
-/* ============================================================
-   ĐIỀU KHIỂN BẢN ĐỒ NỀN — Chuyển đổi giữa OSM / Satellite / Topo
-   ============================================================ */
-document.querySelectorAll('input[name="basemap"]').forEach(function (radio) {
-  radio.addEventListener('change', function () {
-    try {
-      const selected = this.value;
-      // Ẩn tất cả base map, chỉ hiện cái được chọn
-      layerOSM.setVisible(selected === 'osm');
-      layerSatellite.setVisible(selected === 'satellite');
-      layerTopo.setVisible(selected === 'topo');
-    } catch (err) {
-      console.error('Lỗi khi chuyển đổi bản đồ nền:', err);
-    }
+    // Đặt vị trí popup tại điểm click
+    popupOverlay.setPosition(evt.coordinate);
   });
-});
 
-/* ============================================================
-   HÀM ĐIỀU KHIỂN ĐỘ TRONG SUỐT LAYER
-   Được gọi từ HTML: oninput="setLayerOpacity('bacgiang', this.value)"
-   ============================================================ */
-
-/**
- * Đặt độ trong suốt cho layer WMS
- * @param {string} layerName - Tên layer ('bacgiang', 'truonghoc', 'giaothong')
- * @param {number|string} value - Giá trị 0–100
- */
-function setLayerOpacity(layerName, value) {
-  try {
-    const layer = wmsLayers[layerName];
-    if (!layer) {
-      console.error(`Không tìm thấy layer: ${layerName}`);
-      return;
-    }
-    const opacity = parseFloat(value) / 100;
-    layer.setOpacity(opacity);
-
-    // Cập nhật nhãn hiển thị phần trăm
-    const valEl = document.getElementById(`opacity-val-${layerName}`);
-    if (valEl) valEl.textContent = `${Math.round(value)}%`;
-  } catch (err) {
-    console.error(`Lỗi khi đặt opacity cho layer ${layerName}:`, err);
-  }
-}
-
-/**
- * Hiện/ẩn thanh điều chỉnh độ trong suốt của layer
- * @param {string} layerName - Tên layer
- */
-function toggleLayerOpacity(layerName) {
-  try {
-    const opacityDiv = document.getElementById(`opacity-${layerName}`);
-    if (!opacityDiv) return;
-    opacityDiv.classList.toggle('visible');
-  } catch (err) {
-    console.error(`Lỗi khi toggle opacity control cho layer ${layerName}:`, err);
-  }
-}
-
-/* ============================================================
-   HÀM ZOOM ĐẾN LAYER — Dùng WFS GetFeature để lấy extent
-   ============================================================ */
-
-/**
- * Zoom bản đồ đến phạm vi của một layer WMS
- * @param {string} layerName - Tên layer ('bacgiang', 'truonghoc', 'giaothong')
- */
-async function zoomToLayer(layerName) {
-  try {
-    // Gọi WFS GetFeature với outputFormat JSON để lấy toàn bộ đối tượng
-    const wfsUrl = new URL(WFS_URL);
-    wfsUrl.searchParams.set('service',      'WFS');
-    wfsUrl.searchParams.set('version',      '1.1.0');
-    wfsUrl.searchParams.set('request',      'GetFeature');
-    wfsUrl.searchParams.set('typeName',     `${WORKSPACE}:${layerName}`);
-    wfsUrl.searchParams.set('outputFormat', 'application/json');
-    wfsUrl.searchParams.set('maxFeatures',  '1');
-    wfsUrl.searchParams.set('srsName',      'EPSG:4326');
-
-    const response = await fetch(wfsUrl.toString());
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-    const data = await response.json();
-
-    if (!data.features || data.features.length === 0) {
-      console.warn(`Layer ${layerName} không có đối tượng nào.`);
-      return;
-    }
-
-    // Lấy extent từ toàn bộ features bằng cách gọi WFS không giới hạn
-    await zoomToLayerExtent(layerName);
-
-  } catch (err) {
-    console.error(`Lỗi khi zoom đến layer ${layerName}:`, err);
-    // Fallback: zoom về trung tâm Bắc Giang
-    map.getView().animate({
-      center: ol.proj.fromLonLat(BAC_GIANG_CENTER),
-      zoom: DEFAULT_ZOOM,
-      duration: 800
+  // Đóng popup khi nhấn nút X
+  const popupClose = document.getElementById('popupClose');
+  if (popupClose) {
+    popupClose.addEventListener('click', function () {
+      popupEl.classList.add('hidden');
+      popupOverlay.setPosition(undefined);
+      selectedFeature = null;
     });
   }
-}
 
-/**
- * Tính extent thực tế của layer và zoom đến đó
- * @param {string} layerName - Tên layer
- */
-async function zoomToLayerExtent(layerName) {
-  try {
-    // Dùng WMS GetCapabilities hoặc WFS bbox để lấy extent
-    const wfsUrl = new URL(WFS_URL);
-    wfsUrl.searchParams.set('service',      'WFS');
-    wfsUrl.searchParams.set('version',      '1.1.0');
-    wfsUrl.searchParams.set('request',      'GetFeature');
-    wfsUrl.searchParams.set('typeName',     `${WORKSPACE}:${layerName}`);
-    wfsUrl.searchParams.set('outputFormat', 'application/json');
-    wfsUrl.searchParams.set('srsName',      'EPSG:4326');
+  // Nút "Zoom đến" trong popup
+  const popupZoomBtn = document.getElementById('popupZoom');
+  if (popupZoomBtn) {
+    popupZoomBtn.addEventListener('click', function () {
+      if (!selectedFeature) return;
+      const geom = selectedFeature.getGeometry();
+      if (!geom) return;
+      const extent = geom.getExtent();
+      map.getView().fit(extent, {
+        padding:  [80, 80, 80, 80],
+        maxZoom:  15,
+        duration: 600
+      });
+    });
+  }
 
-    const response = await fetch(wfsUrl.toString());
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  // Nút "Chi tiết" trong popup — hiện tại chỉ log ra console
+  const popupInfoBtn = document.getElementById('popupInfo');
+  if (popupInfoBtn) {
+    popupInfoBtn.addEventListener('click', function () {
+      if (!selectedFeature) return;
+      console.info('Chi tiết feature:', selectedFeature.getProperties());
+    });
+  }
 
-    const data = await response.json();
+  // ----------------------------------------------------------
+  // 11. THANH CÔNG CỤ BẢN ĐỒ
+  // ----------------------------------------------------------
 
-    if (!data.features || data.features.length === 0) return;
+  // Phóng to
+  const btnZoomIn = document.getElementById('toolZoomIn');
+  if (btnZoomIn) {
+    btnZoomIn.addEventListener('click', function () {
+      const view = map.getView();
+      view.animate({ zoom: view.getZoom() + 1, duration: 300 });
+    });
+  }
 
-    // Tính extent bao phủ tất cả features
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  // Thu nhỏ
+  const btnZoomOut = document.getElementById('toolZoomOut');
+  if (btnZoomOut) {
+    btnZoomOut.addEventListener('click', function () {
+      const view = map.getView();
+      view.animate({ zoom: view.getZoom() - 1, duration: 300 });
+    });
+  }
 
-    data.features.forEach(function (feature) {
-      if (feature.bbox) {
-        minX = Math.min(minX, feature.bbox[0]);
-        minY = Math.min(minY, feature.bbox[1]);
-        maxX = Math.max(maxX, feature.bbox[2]);
-        maxY = Math.max(maxY, feature.bbox[3]);
-      } else if (feature.geometry) {
-        const coords = extractCoordinates(feature.geometry);
-        coords.forEach(function (c) {
-          minX = Math.min(minX, c[0]);
-          minY = Math.min(minY, c[1]);
-          maxX = Math.max(maxX, c[0]);
-          maxY = Math.max(maxY, c[1]);
+  // Về vị trí ban đầu
+  const btnHome = document.getElementById('toolHome');
+  if (btnHome) {
+    btnHome.addEventListener('click', function () {
+      map.getView().animate({
+        center:   ol.proj.fromLonLat(BAC_GIANG_CENTER),
+        zoom:     DEFAULT_ZOOM,
+        duration: 600
+      });
+    });
+  }
+
+  // Toàn màn hình
+  const btnFullscreen = document.getElementById('toolFullscreen');
+  if (btnFullscreen) {
+    btnFullscreen.addEventListener('click', function () {
+      const mapEl = document.getElementById('map');
+      if (!document.fullscreenElement) {
+        mapEl.requestFullscreen && mapEl.requestFullscreen();
+        this.querySelector('i').className = 'fas fa-compress';
+      } else {
+        document.exitFullscreen && document.exitFullscreen();
+        this.querySelector('i').className = 'fas fa-expand';
+      }
+    });
+  }
+
+  // In bản đồ
+  const btnPrint = document.getElementById('toolPrint');
+  if (btnPrint) {
+    btnPrint.addEventListener('click', function () {
+      window.print();
+    });
+  }
+
+  // ----------------------------------------------------------
+  // 12. CÔNG CỤ ĐO KHOẢNG CÁCH
+  // ----------------------------------------------------------
+  let measureInteraction = null;
+  let isMeasuring        = false;
+
+  const btnMeasure = document.getElementById('toolMeasure');
+  if (btnMeasure) {
+    btnMeasure.addEventListener('click', function () {
+      if (isMeasuring) {
+        // Tắt đo
+        if (measureInteraction) {
+          map.removeInteraction(measureInteraction);
+          measureInteraction = null;
+        }
+        isMeasuring = false;
+        this.classList.remove('active');
+        return;
+      }
+
+      // Bật đo
+      isMeasuring = true;
+      this.classList.add('active');
+
+      const measureSource = new ol.source.Vector();
+      measureInteraction  = new ol.interaction.Draw({
+        source: measureSource,
+        type:   'LineString'
+      });
+
+      measureInteraction.on('drawend', function (evt) {
+        const geom   = evt.feature.getGeometry();
+        // Tính độ dài theo EPSG:4326 → chuyển sang km
+        const coords = geom.getCoordinates();
+        let totalM   = 0;
+        for (let i = 1; i < coords.length; i++) {
+          totalM += ol.sphere.getDistance(
+            ol.proj.toLonLat(coords[i - 1]),
+            ol.proj.toLonLat(coords[i])
+          );
+        }
+        const km = (totalM / 1000).toFixed(2);
+        alert(`Khoảng cách đo được: ${km} km`);
+
+        // Tắt đo sau khi hoàn thành
+        setTimeout(() => {
+          map.removeInteraction(measureInteraction);
+          measureInteraction = null;
+          isMeasuring        = false;
+          if (btnMeasure) btnMeasure.classList.remove('active');
+        }, 100);
+      });
+
+      map.addInteraction(measureInteraction);
+    });
+  }
+
+  // ----------------------------------------------------------
+  // 13. SIDEBAR TOGGLE
+  // ----------------------------------------------------------
+  const sidebarToggle = document.getElementById('sidebarToggle');
+  const sidebar       = document.getElementById('sidebar');
+  const toggleIcon    = document.getElementById('toggleIcon');
+
+  if (sidebarToggle && sidebar) {
+    sidebarToggle.addEventListener('click', function () {
+      sidebar.classList.toggle('collapsed');
+      if (toggleIcon) {
+        toggleIcon.className = sidebar.classList.contains('collapsed')
+          ? 'fas fa-chevron-right'
+          : 'fas fa-chevron-left';
+      }
+      // Cập nhật lại kích thước bản đồ sau khi sidebar thay đổi
+      setTimeout(() => map.updateSize(), 300);
+    });
+  }
+
+  // ----------------------------------------------------------
+  // 14. MODAL THÔNG TIN HỆ THỐNG
+  // ----------------------------------------------------------
+  const infoBtn      = document.getElementById('infoBtn');
+  const infoModal    = document.getElementById('infoModal');
+  const modalClose   = document.getElementById('modalClose');
+  const modalOverlay = document.getElementById('modalOverlay');
+
+  function openModal()  { if (infoModal) infoModal.classList.remove('hidden'); }
+  function closeModal() { if (infoModal) infoModal.classList.add('hidden'); }
+
+  if (infoBtn)      infoBtn.addEventListener('click', openModal);
+  if (modalClose)   modalClose.addEventListener('click', closeModal);
+  if (modalOverlay) modalOverlay.addEventListener('click', closeModal);
+
+  // ----------------------------------------------------------
+  // 15. TÌM KIẾM — lọc trực tiếp từ dữ liệu GeoJSON nhúng
+  // ----------------------------------------------------------
+  const searchInput   = document.getElementById('searchInput');
+  const searchBtn     = document.getElementById('searchBtn');
+  const searchResults = document.getElementById('searchResults');
+
+  /**
+   * Thực hiện tìm kiếm trong dữ liệu GeoJSON nhúng
+   * @param {string} keyword
+   */
+  function doSearch(keyword) {
+    if (!keyword || keyword.trim() === '') {
+      searchResults.classList.add('hidden');
+      return;
+    }
+
+    const kw = keyword.trim().toLowerCase();
+    const results = [];
+
+    // Tìm trong trường học
+    TRUONGHOC_GEOJSON.features.forEach(function (f) {
+      const ten = (f.properties.ten || '').toLowerCase();
+      if (ten.includes(kw)) {
+        results.push({
+          label:  f.properties.ten,
+          sub:    f.properties.loai + ' — ' + f.properties.huyen,
+          icon:   'fa-school',
+          coords: f.geometry.coordinates, // [lon, lat]
+          type:   'point'
         });
       }
     });
 
-    if (!isFinite(minX)) return;
-
-    // Chuyển extent từ WGS84 sang EPSG:3857
-    const extent = ol.proj.transformExtent(
-      [minX, minY, maxX, maxY],
-      'EPSG:4326',
-      'EPSG:3857'
-    );
-
-    // Zoom đến extent với padding
-    map.getView().fit(extent, {
-      padding: [60, 60, 60, 60],
-      duration: 800,
-      maxZoom: 15
-    });
-
-  } catch (err) {
-    console.error(`Lỗi khi tính extent layer ${layerName}:`, err);
-  }
-}
-
-/**
- * Trích xuất tất cả tọa độ từ một geometry GeoJSON
- * @param {Object} geometry - Đối tượng geometry GeoJSON
- * @returns {Array} Mảng tọa độ [lon, lat]
- */
-function extractCoordinates(geometry) {
-  const coords = [];
-  function recurse(arr) {
-    if (!Array.isArray(arr)) return;
-    if (typeof arr[0] === 'number') {
-      coords.push(arr);
-    } else {
-      arr.forEach(recurse);
-    }
-  }
-  if (geometry && geometry.coordinates) {
-    recurse(geometry.coordinates);
-  }
-  return coords;
-}
-
-/* ============================================================
-   THANH CÔNG CỤ BẢN ĐỒ
-   ============================================================ */
-
-// Nút Zoom In — phóng to bản đồ
-document.getElementById('toolZoomIn').addEventListener('click', function () {
-  try {
-    const view = map.getView();
-    const currentZoom = view.getZoom();
-    view.animate({ zoom: currentZoom + 1, duration: 300 });
-  } catch (err) {
-    console.error('Lỗi khi zoom in:', err);
-  }
-});
-
-// Nút Zoom Out — thu nhỏ bản đồ
-document.getElementById('toolZoomOut').addEventListener('click', function () {
-  try {
-    const view = map.getView();
-    const currentZoom = view.getZoom();
-    view.animate({ zoom: currentZoom - 1, duration: 300 });
-  } catch (err) {
-    console.error('Lỗi khi zoom out:', err);
-  }
-});
-
-// Nút Home — quay về vị trí ban đầu (trung tâm Bắc Giang)
-document.getElementById('toolHome').addEventListener('click', function () {
-  try {
-    map.getView().animate({
-      center: ol.proj.fromLonLat(BAC_GIANG_CENTER),
-      zoom: DEFAULT_ZOOM,
-      duration: 800
-    });
-  } catch (err) {
-    console.error('Lỗi khi về vị trí ban đầu:', err);
-  }
-});
-
-// Nút Fullscreen — chuyển sang chế độ toàn màn hình
-document.getElementById('toolFullscreen').addEventListener('click', function () {
-  try {
-    const mapContainer = document.querySelector('.map-container');
-    if (!document.fullscreenElement) {
-      // Vào chế độ toàn màn hình
-      if (mapContainer.requestFullscreen) {
-        mapContainer.requestFullscreen();
-      } else if (mapContainer.webkitRequestFullscreen) {
-        mapContainer.webkitRequestFullscreen();
-      }
-      this.querySelector('i').className = 'fas fa-compress';
-      this.title = 'Thoát toàn màn hình';
-    } else {
-      // Thoát chế độ toàn màn hình
-      if (document.exitFullscreen) {
-        document.exitFullscreen();
-      } else if (document.webkitExitFullscreen) {
-        document.webkitExitFullscreen();
-      }
-      this.querySelector('i').className = 'fas fa-expand';
-      this.title = 'Toàn màn hình';
-    }
-  } catch (err) {
-    console.error('Lỗi khi chuyển toàn màn hình:', err);
-  }
-});
-
-// Cập nhật icon khi thoát fullscreen bằng phím Esc
-document.addEventListener('fullscreenchange', function () {
-  try {
-    const btn = document.getElementById('toolFullscreen');
-    if (!btn) return;
-    if (!document.fullscreenElement) {
-      btn.querySelector('i').className = 'fas fa-expand';
-      btn.title = 'Toàn màn hình';
-    }
-  } catch (err) {
-    console.error('Lỗi khi xử lý fullscreenchange:', err);
-  }
-});
-
-// Nút In bản đồ — mở hộp thoại in của trình duyệt
-document.getElementById('toolPrint').addEventListener('click', function () {
-  try {
-    window.print();
-  } catch (err) {
-    console.error('Lỗi khi in bản đồ:', err);
-  }
-});
-
-/* ============================================================
-   CÔNG CỤ ĐO KHOẢNG CÁCH
-   ============================================================ */
-
-// Tạo layer vector để vẽ đường đo
-measureSource = new ol.source.Vector();
-measureLayer  = new ol.layer.Vector({
-  source: measureSource,
-  style: new ol.style.Style({
-    stroke: new ol.style.Stroke({
-      color: '#FF6F00',
-      width: 2,
-      lineDash: [8, 4]
-    }),
-    fill: new ol.style.Fill({
-      color: 'rgba(255, 111, 0, 0.1)'
-    }),
-    image: new ol.style.Circle({
-      radius: 5,
-      fill: new ol.style.Fill({ color: '#FF6F00' }),
-      stroke: new ol.style.Stroke({ color: '#FFF', width: 2 })
-    })
-  }),
-  properties: { name: 'measure' }
-});
-map.addLayer(measureLayer);
-
-// Nút đo khoảng cách — bật/tắt chế độ đo
-document.getElementById('toolMeasure').addEventListener('click', function () {
-  try {
-    measureActive = !measureActive;
-    this.classList.toggle('active', measureActive);
-
-    if (measureActive) {
-      // Bật chế độ đo — thêm interaction vẽ đường
-      startMeasure();
-      this.title = 'Dừng đo';
-    } else {
-      // Tắt chế độ đo — xóa đường đo
-      stopMeasure();
-      this.title = 'Đo khoảng cách';
-    }
-  } catch (err) {
-    console.error('Lỗi khi toggle công cụ đo:', err);
-  }
-});
-
-/** Bắt đầu chế độ đo khoảng cách */
-function startMeasure() {
-  try {
-    measureSource.clear();
-
-    const draw = new ol.interaction.Draw({
-      source: measureSource,
-      type: 'LineString',
-      style: new ol.style.Style({
-        stroke: new ol.style.Stroke({
-          color: '#FF6F00',
-          width: 2,
-          lineDash: [8, 4]
-        }),
-        image: new ol.style.Circle({
-          radius: 5,
-          fill: new ol.style.Fill({ color: '#FF6F00' }),
-          stroke: new ol.style.Stroke({ color: '#FFF', width: 2 })
-        })
-      })
-    });
-
-    // Lưu tham chiếu để có thể xóa sau
-    map._measureDraw = draw;
-    map.addInteraction(draw);
-
-    // Khi vẽ xong — hiển thị kết quả đo
-    draw.on('drawend', function (evt) {
-      try {
-        const geom   = evt.feature.getGeometry();
-        const length = ol.sphere.getLength(geom);
-        const km     = (length / 1000).toFixed(2);
-        const m      = Math.round(length);
-        alert(`Khoảng cách đo được:\n${km} km (${m.toLocaleString('vi-VN')} m)`);
-      } catch (err) {
-        console.error('Lỗi khi tính khoảng cách:', err);
+    // Tìm trong giao thông
+    GIAOTHONG_GEOJSON.features.forEach(function (f) {
+      const ten = (f.properties.tenduong || '').toLowerCase();
+      if (ten.includes(kw)) {
+        results.push({
+          label:  f.properties.tenduong,
+          sub:    f.properties.loaiduong + ' — ' + f.properties.chieudai + ' km',
+          icon:   'fa-road',
+          coords: f.geometry.coordinates, // [[lon,lat], ...]
+          type:   'line'
+        });
       }
     });
 
-  } catch (err) {
-    console.error('Lỗi khi bắt đầu đo:', err);
-  }
-}
+    // Hiển thị kết quả
+    if (results.length === 0) {
+      searchResults.innerHTML = '<div class="search-result-item no-result">Không tìm thấy kết quả</div>';
+    } else {
+      searchResults.innerHTML = results.map(function (r, idx) {
+        return `<div class="search-result-item" data-idx="${idx}">
+          <i class="fas ${r.icon}"></i>
+          <div class="result-text">
+            <div class="result-name">${r.label}</div>
+            <div class="result-sub">${r.sub}</div>
+          </div>
+        </div>`;
+      }).join('');
 
-/** Dừng chế độ đo khoảng cách */
-function stopMeasure() {
-  try {
-    if (map._measureDraw) {
-      map.removeInteraction(map._measureDraw);
-      map._measureDraw = null;
+      // Gắn sự kiện click cho từng kết quả
+      searchResults.querySelectorAll('.search-result-item[data-idx]').forEach(function (el) {
+        el.addEventListener('click', function () {
+          const idx = parseInt(this.getAttribute('data-idx'));
+          const r   = results[idx];
+
+          if (r.type === 'point') {
+            // Zoom đến điểm trường học
+            map.getView().animate({
+              center:   ol.proj.fromLonLat(r.coords),
+              zoom:     14,
+              duration: 600
+            });
+          } else {
+            // Zoom đến extent của tuyến đường
+            const lineCoords = r.coords.map(c => ol.proj.fromLonLat(c));
+            const geom       = new ol.geom.LineString(lineCoords);
+            map.getView().fit(geom.getExtent(), {
+              padding:  [60, 60, 60, 60],
+              maxZoom:  13,
+              duration: 600
+            });
+          }
+
+          searchResults.classList.add('hidden');
+          if (searchInput) searchInput.value = r.label;
+        });
+      });
     }
-    measureSource.clear();
-  } catch (err) {
-    console.error('Lỗi khi dừng đo:', err);
+
+    searchResults.classList.remove('hidden');
   }
-}
 
-/* ============================================================
-   POPUP — Nút đóng và zoom đến đối tượng
-   ============================================================ */
+  if (searchBtn) {
+    searchBtn.addEventListener('click', function () {
+      doSearch(searchInput ? searchInput.value : '');
+    });
+  }
 
-// Nút đóng popup
-document.getElementById('popupClose').addEventListener('click', function () {
-  hidePopup();
-});
+  if (searchInput) {
+    searchInput.addEventListener('keyup', function (e) {
+      if (e.key === 'Enter') {
+        doSearch(this.value);
+      } else if (e.key === 'Escape') {
+        searchResults.classList.add('hidden');
+      } else {
+        // Tìm kiếm tức thì khi gõ (debounce nhẹ)
+        clearTimeout(searchInput._debounce);
+        searchInput._debounce = setTimeout(() => doSearch(this.value), 300);
+      }
+    });
 
-// Nút zoom đến đối tượng trong popup
-document.getElementById('popupZoom').addEventListener('click', function () {
-  try {
-    if (currentFeatureBbox) {
-      // Zoom đến bounding box của đối tượng (tọa độ WGS84)
-      const extent = ol.proj.transformExtent(
-        currentFeatureBbox,
-        'EPSG:4326',
-        'EPSG:3857'
-      );
+    // Ẩn kết quả khi click ra ngoài
+    document.addEventListener('click', function (e) {
+      if (!searchInput.contains(e.target) && !searchResults.contains(e.target)) {
+        searchResults.classList.add('hidden');
+      }
+    });
+  }
+
+  // ----------------------------------------------------------
+  // 16. THỐNG KÊ — tính từ dữ liệu GeoJSON nhúng
+  // ----------------------------------------------------------
+  const statHuyen  = document.getElementById('statHuyen');
+  const statTruong = document.getElementById('statTruong');
+  const statDuong  = document.getElementById('statDuong');
+  const statKm     = document.getElementById('statKm');
+
+  if (statHuyen)  statHuyen.textContent  = '10'; // Cố định 10 huyện/TP
+  if (statTruong) statTruong.textContent = TRUONGHOC_GEOJSON.features.length;
+  if (statDuong)  statDuong.textContent  = GIAOTHONG_GEOJSON.features.length;
+
+  // Tính tổng chiều dài đường
+  const tongKm = GIAOTHONG_GEOJSON.features.reduce(function (sum, f) {
+    return sum + (f.properties.chieudai || 0);
+  }, 0);
+  if (statKm) statKm.textContent = tongKm.toFixed(0);
+
+  // ----------------------------------------------------------
+  // 17. HÀM ĐIỀU KHIỂN OPACITY (export ra window)
+  // ----------------------------------------------------------
+
+  /**
+   * Đặt độ trong suốt cho layer
+   * @param {string} layerName - 'truonghoc' | 'giaothong' | 'bacgiang'
+   * @param {number|string} value - 0..100
+   */
+  function setLayerOpacity(layerName, value) {
+    const opacity = parseFloat(value) / 100;
+    const valEl   = document.getElementById('opacity-val-' + layerName);
+    if (valEl) valEl.textContent = Math.round(value) + '%';
+
+    switch (layerName) {
+      case 'truonghoc':
+        vectorLayerTruonghoc.setOpacity(opacity);
+        break;
+      case 'giaothong':
+        vectorLayerGiaothong.setOpacity(opacity);
+        break;
+      case 'bacgiang':
+        // Không có layer hành chính — bỏ qua
+        break;
+      default:
+        console.warn('setLayerOpacity: không tìm thấy layer', layerName);
+    }
+  }
+
+  /**
+   * Bật/tắt hiển thị thanh opacity
+   * @param {string} layerName
+   */
+  function toggleLayerOpacity(layerName) {
+    const ctrl = document.getElementById('opacity-' + layerName);
+    if (ctrl) {
+      ctrl.style.display = ctrl.style.display === 'block' ? 'none' : 'block';
+    }
+  }
+
+  /**
+   * Zoom đến extent của layer
+   * @param {string} layerName - 'truonghoc' | 'giaothong' | 'bacgiang'
+   */
+  function zoomToLayer(layerName) {
+    let extent = null;
+
+    switch (layerName) {
+      case 'truonghoc':
+        extent = sourceTruonghoc.getExtent();
+        break;
+      case 'giaothong':
+        extent = sourceGiaothong.getExtent();
+        break;
+      case 'bacgiang':
+        // Zoom về toàn tỉnh Bắc Giang (bounding box xấp xỉ)
+        extent = ol.proj.transformExtent(
+          [105.80, 21.10, 106.90, 21.55],
+          'EPSG:4326',
+          'EPSG:3857'
+        );
+        break;
+      default:
+        console.warn('zoomToLayer: không tìm thấy layer', layerName);
+        return;
+    }
+
+    if (extent && !ol.extent.isEmpty(extent)) {
       map.getView().fit(extent, {
-        padding: [80, 80, 80, 80],
-        duration: 800,
-        maxZoom: 16
-      });
-    } else if (currentFeatureCoord) {
-      // Fallback: zoom đến tọa độ click
-      map.getView().animate({
-        center: currentFeatureCoord,
-        zoom: Math.max(map.getView().getZoom(), 14),
-        duration: 800
+        padding:  [60, 60, 60, 60],
+        maxZoom:  14,
+        duration: 700
       });
     }
-  } catch (err) {
-    console.error('Lỗi khi zoom đến đối tượng:', err);
   }
-});
 
-/* ============================================================
-   SIDEBAR — Thu/mở bảng điều khiển bên trái
-   ============================================================ */
-document.getElementById('sidebarToggle').addEventListener('click', function () {
-  try {
-    const sidebar    = document.getElementById('sidebar');
-    const toggleIcon = document.getElementById('toggleIcon');
+  // Export ra window để HTML inline onclick có thể gọi
+  window.setLayerOpacity    = setLayerOpacity;
+  window.toggleLayerOpacity = toggleLayerOpacity;
+  window.zoomToLayer        = zoomToLayer;
 
-    if (!sidebar || !toggleIcon) return;
-
-    const isCollapsed = sidebar.classList.toggle('collapsed');
-
-    // Đổi icon mũi tên theo trạng thái
-    if (isCollapsed) {
-      toggleIcon.className = 'fas fa-chevron-right';
-      this.title = 'Mở bảng điều khiển';
-    } else {
-      toggleIcon.className = 'fas fa-chevron-left';
-      this.title = 'Thu bảng điều khiển';
-    }
-
-    // Cập nhật kích thước bản đồ sau khi sidebar thay đổi
-    setTimeout(function () {
-      map.updateSize();
-    }, 300);
-
-  } catch (err) {
-    console.error('Lỗi khi toggle sidebar:', err);
-  }
-});
-
-/* ============================================================
-   MODAL THÔNG TIN HỆ THỐNG
-   ============================================================ */
-
-// Nút mở modal thông tin
-document.getElementById('infoBtn').addEventListener('click', function () {
-  try {
-    const modal = document.getElementById('infoModal');
-    if (modal) modal.classList.remove('hidden');
-  } catch (err) {
-    console.error('Lỗi khi mở modal:', err);
-  }
-});
-
-// Nút đóng modal (X)
-document.getElementById('modalClose').addEventListener('click', function () {
-  try {
-    const modal = document.getElementById('infoModal');
-    if (modal) modal.classList.add('hidden');
-  } catch (err) {
-    console.error('Lỗi khi đóng modal:', err);
-  }
-});
-
-// Click vào overlay nền để đóng modal
-document.getElementById('modalOverlay').addEventListener('click', function () {
-  try {
-    const modal = document.getElementById('infoModal');
-    if (modal) modal.classList.add('hidden');
-  } catch (err) {
-    console.error('Lỗi khi đóng modal qua overlay:', err);
-  }
-});
-
-// Đóng modal bằng phím Escape
-document.addEventListener('keydown', function (evt) {
-  if (evt.key === 'Escape') {
-    try {
-      const modal = document.getElementById('infoModal');
-      if (modal && !modal.classList.contains('hidden')) {
-        modal.classList.add('hidden');
-      }
-      // Cũng đóng popup nếu đang mở
-      hidePopup();
-    } catch (err) {
-      console.error('Lỗi khi xử lý phím Escape:', err);
-    }
-  }
-});
-
-/* ============================================================
-   TÌM KIẾM — WFS GetFeature cho 3 layer
-   ============================================================ */
-
-// Biến lưu timeout debounce tìm kiếm
-let searchTimeout = null;
-
-/**
- * Thực hiện tìm kiếm WFS trên 3 layer
- * @param {string} keyword - Từ khóa tìm kiếm
- */
-async function performSearch(keyword) {
-  const resultsEl = document.getElementById('searchResults');
-  if (!resultsEl) return;
-
-  // Xóa kết quả cũ
-  resultsEl.innerHTML = '';
-  resultsEl.classList.add('hidden');
-
-  const q = keyword.trim();
-  if (q.length < 2) return;
-
-  // Hiển thị trạng thái đang tìm
-  resultsEl.innerHTML = '<div class="search-result-item"><span style="color:#64748B;font-size:12px;">Đang tìm kiếm...</span></div>';
-  resultsEl.classList.remove('hidden');
-
-  const allResults = [];
-
-  // Tìm kiếm song song trên 3 layer
-  const searches = [
-    searchWFS('bacgiang',  'name_2',   q, 'huyen',  'Hành chính'),
-    searchWFS('truonghoc', 'ten',      q, 'truong', 'Trường học'),
-    searchWFS('giaothong', 'tenduong', q, 'duong',  'Giao thông')
-  ];
-
-  try {
-    const results = await Promise.allSettled(searches);
-    results.forEach(function (r) {
-      if (r.status === 'fulfilled' && r.value) {
-        allResults.push(...r.value);
-      }
+  // ----------------------------------------------------------
+  // 18. CURSOR KHI DI CHUỘT QUA FEATURE
+  // ----------------------------------------------------------
+  map.on('pointermove', function (evt) {
+    if (evt.dragging) return;
+    const hit = map.hasFeatureAtPixel(evt.pixel, {
+      layerFilter: l => l === vectorLayerTruonghoc || l === vectorLayerGiaothong,
+      hitTolerance: 4
     });
-  } catch (err) {
-    console.error('Lỗi khi tìm kiếm:', err);
-  }
-
-  // Hiển thị kết quả
-  resultsEl.innerHTML = '';
-
-  if (allResults.length === 0) {
-    resultsEl.innerHTML = '<div class="search-result-item"><span style="color:#64748B;font-size:12px;">Không tìm thấy kết quả nào.</span></div>';
-    resultsEl.classList.remove('hidden');
-    return;
-  }
-
-  allResults.forEach(function (item) {
-    const div = document.createElement('div');
-    div.className = 'search-result-item';
-    div.innerHTML = `
-      <span class="search-result-icon ${item.iconClass}">
-        <i class="${item.icon}"></i>
-      </span>
-      <div class="search-result-text">
-        <strong>${escapeHtml(item.name)}</strong>
-        <small>${item.type}</small>
-      </div>`;
-
-    // Click vào kết quả — zoom đến đối tượng
-    div.addEventListener('click', function () {
-      try {
-        if (item.bbox) {
-          const extent = ol.proj.transformExtent(item.bbox, 'EPSG:4326', 'EPSG:3857');
-          map.getView().fit(extent, {
-            padding: [80, 80, 80, 80],
-            duration: 800,
-            maxZoom: 15
-          });
-        } else if (item.coord) {
-          map.getView().animate({
-            center: ol.proj.fromLonLat(item.coord),
-            zoom: 14,
-            duration: 800
-          });
-        }
-        // Ẩn kết quả tìm kiếm
-        resultsEl.classList.add('hidden');
-        document.getElementById('searchInput').value = item.name;
-      } catch (err) {
-        console.error('Lỗi khi zoom đến kết quả tìm kiếm:', err);
-      }
-    });
-
-    resultsEl.appendChild(div);
+    map.getTargetElement().style.cursor = hit ? 'pointer' : '';
   });
 
-  resultsEl.classList.remove('hidden');
-}
-
-/**
- * Tìm kiếm WFS cho một layer cụ thể
- * @param {string} layerName - Tên layer
- * @param {string} fieldName - Tên trường tìm kiếm
- * @param {string} keyword   - Từ khóa
- * @param {string} iconClass - CSS class cho icon
- * @param {string} typeLabel - Nhãn loại đối tượng
- * @returns {Promise<Array>} Mảng kết quả tìm kiếm
- */
-async function searchWFS(layerName, fieldName, keyword, iconClass, typeLabel) {
-  try {
-    // Xây dựng filter CQL để tìm kiếm không phân biệt hoa thường
-    const cqlFilter = `strToLowerCase(${fieldName}) LIKE '%${keyword.toLowerCase()}%'`;
-
-    const wfsUrl = new URL(WFS_URL);
-    wfsUrl.searchParams.set('service',      'WFS');
-    wfsUrl.searchParams.set('version',      '1.1.0');
-    wfsUrl.searchParams.set('request',      'GetFeature');
-    wfsUrl.searchParams.set('typeName',     `${WORKSPACE}:${layerName}`);
-    wfsUrl.searchParams.set('outputFormat', 'application/json');
-    wfsUrl.searchParams.set('CQL_FILTER',   cqlFilter);
-    wfsUrl.searchParams.set('maxFeatures',  '5');
-    wfsUrl.searchParams.set('srsName',      'EPSG:4326');
-
-    const response = await fetch(wfsUrl.toString());
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-    const data = await response.json();
-    if (!data.features || data.features.length === 0) return [];
-
-    // Ánh xạ icon theo loại layer
-    const iconMap = {
-      huyen:  'fas fa-map-marker-alt',
-      truong: 'fas fa-school',
-      duong:  'fas fa-road'
-    };
-
-    return data.features.map(function (feature) {
-      const props = feature.properties || {};
-      const name  = props[fieldName] || props[fieldName.toUpperCase()] || 'Không rõ';
-
-      // Lấy tọa độ trung tâm từ geometry
-      let coord = null;
-      let bbox  = feature.bbox || null;
-
-      if (feature.geometry) {
-        const coords = extractCoordinates(feature.geometry);
-        if (coords.length > 0) {
-          // Tính trung tâm đơn giản
-          const sumX = coords.reduce((s, c) => s + c[0], 0);
-          const sumY = coords.reduce((s, c) => s + c[1], 0);
-          coord = [sumX / coords.length, sumY / coords.length];
-        }
-      }
-
-      return {
-        name:      name,
-        type:      typeLabel,
-        iconClass: iconClass,
-        icon:      iconMap[iconClass] || 'fas fa-map-pin',
-        coord:     coord,
-        bbox:      bbox
-      };
-    });
-
-  } catch (err) {
-    console.error(`Lỗi khi tìm kiếm WFS layer ${layerName}:`, err);
-    return [];
+// ============================================================
+// KẾT THÚC try/catch
+// ============================================================
+} catch (err) {
+  console.error('Lỗi khởi tạo WebGIS Bắc Giang:', err);
+  const loadingOverlay = document.getElementById('loadingOverlay');
+  if (loadingOverlay) {
+    loadingOverlay.innerHTML = `
+      <div class="loading-spinner" style="color:#e74c3c;">
+        <i class="fas fa-exclamation-triangle"></i>
+        <span>Lỗi tải bản đồ: ${err.message}</span>
+      </div>`;
   }
 }
-
-/**
- * Escape HTML để tránh XSS khi hiển thị kết quả tìm kiếm
- * @param {string} str - Chuỗi cần escape
- * @returns {string} Chuỗi đã escape
- */
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.appendChild(document.createTextNode(String(str)));
-  return div.innerHTML;
-}
-
-// Sự kiện click nút tìm kiếm
-document.getElementById('searchBtn').addEventListener('click', function () {
-  try {
-    const keyword = document.getElementById('searchInput').value;
-    performSearch(keyword);
-  } catch (err) {
-    console.error('Lỗi khi click nút tìm kiếm:', err);
-  }
-});
-
-// Sự kiện nhập liệu — tìm kiếm tự động sau 400ms (debounce)
-document.getElementById('searchInput').addEventListener('input', function () {
-  try {
-    clearTimeout(searchTimeout);
-    const keyword = this.value;
-    if (keyword.trim().length < 2) {
-      const resultsEl = document.getElementById('searchResults');
-      if (resultsEl) resultsEl.classList.add('hidden');
-      return;
-    }
-    searchTimeout = setTimeout(function () {
-      performSearch(keyword);
-    }, 400);
-  } catch (err) {
-    console.error('Lỗi khi xử lý input tìm kiếm:', err);
-  }
-});
-
-// Nhấn Enter trong ô tìm kiếm
-document.getElementById('searchInput').addEventListener('keydown', function (evt) {
-  if (evt.key === 'Enter') {
-    try {
-      clearTimeout(searchTimeout);
-      performSearch(this.value);
-    } catch (err) {
-      console.error('Lỗi khi tìm kiếm bằng Enter:', err);
-    }
-  }
-});
-
-// Ẩn kết quả tìm kiếm khi click ra ngoài
-document.addEventListener('click', function (evt) {
-  try {
-    const searchBox     = document.querySelector('.search-box');
-    const searchResults = document.getElementById('searchResults');
-    if (!searchBox || !searchResults) return;
-    if (!searchBox.contains(evt.target) && !searchResults.contains(evt.target)) {
-      searchResults.classList.add('hidden');
-    }
-  } catch (err) {
-    console.error('Lỗi khi ẩn kết quả tìm kiếm:', err);
-  }
-});
-
-/* ============================================================
-   CẬP NHẬT THỐNG KÊ — Đếm số đối tượng từ WFS
-   ============================================================ */
-
-/**
- * Lấy số lượng đối tượng của một layer từ WFS
- * @param {string} layerName - Tên layer
- * @returns {Promise<number>} Số lượng đối tượng
- */
-async function getFeatureCount(layerName) {
-  try {
-    const wfsUrl = new URL(WFS_URL);
-    wfsUrl.searchParams.set('service',      'WFS');
-    wfsUrl.searchParams.set('version',      '1.1.0');
-    wfsUrl.searchParams.set('request',      'GetFeature');
-    wfsUrl.searchParams.set('typeName',     `${WORKSPACE}:${layerName}`);
-    wfsUrl.searchParams.set('outputFormat', 'application/json');
-    wfsUrl.searchParams.set('resultType',   'hits');
-
-    const response = await fetch(wfsUrl.toString());
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    return data.totalFeatures || data.numberMatched || (data.features ? data.features.length : null);
-  } catch (err) {
-    console.error(`Lỗi khi lấy số lượng đối tượng layer ${layerName}:`, err);
-    return null;
-  }
-}
-
-/**
- * Tính tổng chiều dài đường từ WFS (đơn vị km)
- * @returns {Promise<number|null>} Tổng chiều dài km
- */
-async function getTotalRoadLength() {
-  try {
-    const wfsUrl = new URL(WFS_URL);
-    wfsUrl.searchParams.set('service',      'WFS');
-    wfsUrl.searchParams.set('version',      '1.1.0');
-    wfsUrl.searchParams.set('request',      'GetFeature');
-    wfsUrl.searchParams.set('typeName',     `${WORKSPACE}:giaothong`);
-    wfsUrl.searchParams.set('outputFormat', 'application/json');
-    wfsUrl.searchParams.set('srsName',      'EPSG:4326');
-
-    const response = await fetch(wfsUrl.toString());
-    if (!response.ok) return null;
-
-    const data = await response.json();
-    if (!data.features) return null;
-
-    let totalKm = 0;
-    data.features.forEach(function (feature) {
-      // Ưu tiên dùng trường chieudai nếu có
-      const props = feature.properties || {};
-      const cd = props.chieudai || props.CHIEUDAI;
-      if (cd && !isNaN(parseFloat(cd))) {
-        totalKm += parseFloat(cd);
-      } else if (feature.geometry) {
-        // Tính từ geometry nếu không có trường chiều dài
-        const coords = extractCoordinates(feature.geometry);
-        for (let i = 1; i < coords.length; i++) {
-          const p1 = ol.proj.fromLonLat(coords[i - 1]);
-          const p2 = ol.proj.fromLonLat(coords[i]);
-          const dx = p2[0] - p1[0];
-          const dy = p2[1] - p1[1];
-          totalKm += Math.sqrt(dx * dx + dy * dy) / 1000;
-        }
-      }
-    });
-
-    return Math.round(totalKm);
-  } catch (err) {
-    console.error('Lỗi khi tính tổng chiều dài đường:', err);
-    return null;
-  }
-}
-
-/** Cập nhật các thẻ thống kê trong sidebar */
-async function updateStats() {
-  try {
-    // Chạy song song để tiết kiệm thời gian
-    const [countHuyen, countTruong, countDuong, totalKm] = await Promise.allSettled([
-      getFeatureCount('bacgiang'),
-      getFeatureCount('truonghoc'),
-      getFeatureCount('giaothong'),
-      getTotalRoadLength()
-    ]);
-
-    const setStatValue = function (id, value, fallback) {
-      const el = document.getElementById(id);
-      if (el && value !== null && value !== undefined) {
-        el.textContent = value;
-      } else if (el && fallback !== undefined) {
-        el.textContent = fallback;
-      }
-    };
-
-    setStatValue('statHuyen', countHuyen.status  === 'fulfilled' ? countHuyen.value  : null);
-    setStatValue('statTruong', countTruong.status === 'fulfilled' ? countTruong.value : null);
-    setStatValue('statDuong',  countDuong.status  === 'fulfilled' ? countDuong.value  : null);
-    setStatValue('statKm',     totalKm.status     === 'fulfilled' ? totalKm.value     : null);
-
-  } catch (err) {
-    console.error('Lỗi khi cập nhật thống kê:', err);
-  }
-}
-
-// Cập nhật thống kê sau khi bản đồ tải xong
-map.once('rendercomplete', function () {
-  // Trì hoãn một chút để không ảnh hưởng đến tải bản đồ
-  setTimeout(updateStats, 1500);
-});
-
-/* ============================================================
-   XỬ LÝ THAY ĐỔI KÍCH THƯỚC CỬA SỔ
-   ============================================================ */
-window.addEventListener('resize', function () {
-  try {
-    map.updateSize();
-  } catch (err) {
-    console.error('Lỗi khi cập nhật kích thước bản đồ:', err);
-  }
-});
-
-/* ============================================================
-   XUẤT HÀM RA PHẠM VI TOÀN CỤC (window)
-   Để HTML có thể gọi trực tiếp qua onclick="..."
-   ============================================================ */
-window.setLayerOpacity    = setLayerOpacity;
-window.toggleLayerOpacity = toggleLayerOpacity;
-window.zoomToLayer        = zoomToLayer;
-
-/* ============================================================
-   KHỞI TẠO HOÀN TẤT
-   ============================================================ */
-console.log('✅ WebGIS Bắc Giang đã khởi tạo thành công.');
-console.log(`   GeoServer: ${GEOSERVER_URL}`);
-console.log(`   Workspace: ${WORKSPACE}`);
-console.log(`   Trung tâm: ${BAC_GIANG_CENTER}`);
