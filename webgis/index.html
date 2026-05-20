@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebGIS Bắc Giang — Bản đồ Hành chính & Giao thông</title>
+
+  <!-- OpenLayers 9 CSS -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@9.2.4/ol.css" />
+
+  <!-- Font Awesome cho icon -->
+  <link rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet" />
+
+  <!-- CSS riêng của ứng dụng -->
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ============================================================
+       HEADER — Thanh tiêu đề trên cùng
+       ============================================================ -->
+  <header class="app-header">
+    <div class="header-left">
+      <!-- Logo / Icon -->
+      <div class="header-logo">
+        <i class="fas fa-map-marked-alt"></i>
+      </div>
+      <div class="header-title">
+        <h1>WebGIS Bắc Giang</h1>
+        <span class="header-subtitle">Bản đồ Hành chính &amp; Giao thông</span>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <!-- Thanh tìm kiếm -->
+      <div class="search-box">
+        <i class="fas fa-search search-icon"></i>
+        <input
+          type="text"
+          id="searchInput"
+          placeholder="Tìm kiếm huyện, trường học, đường..."
+          autocomplete="off"
+        />
+        <button id="searchBtn" title="Tìm kiếm">
+          <i class="fas fa-arrow-right"></i>
+        </button>
+      </div>
+
+      <!-- Kết quả tìm kiếm dropdown -->
+      <div id="searchResults" class="search-results hidden"></div>
+
+      <!-- Nút thông tin -->
+      <button class="header-btn" id="infoBtn" title="Thông tin hệ thống">
+        <i class="fas fa-info-circle"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- ============================================================
+       LAYOUT CHÍNH: Sidebar + Bản đồ
+       ============================================================ -->
+  <div class="app-body">
+
+    <!-- ============================================================
+         SIDEBAR — Bảng điều khiển bên trái
+         ============================================================ -->
+    <aside class="sidebar" id="sidebar">
+
+      <!-- Nút thu/mở sidebar -->
+      <button class="sidebar-toggle" id="sidebarToggle" title="Thu/mở bảng điều khiển">
+        <i class="fas fa-chevron-left" id="toggleIcon"></i>
+      </button>
+
+      <!-- ---- PHẦN 1: ĐIỀU KHIỂN LAYER ---- -->
+      <div class="sidebar-section">
+        <div class="section-header">
+          <i class="fas fa-layer-group"></i>
+          <span>Lớp bản đồ</span>
+        </div>
+
+        <!-- Layer Base Map -->
+        <div class="layer-group">
+          <div class="layer-group-title">Bản đồ nền</div>
+
+          <label class="layer-item">
+            <input type="radio" name="basemap" value="osm" checked />
+            <span class="layer-icon osm-icon"><i class="fas fa-map"></i></span>
+            <span class="layer-name">OpenStreetMap</span>
+          </label>
+
+          <label class="layer-item">
+            <input type="radio" name="basemap" value="satellite" />
+            <span class="layer-icon sat-icon"><i class="fas fa-satellite"></i></span>
+            <span class="layer-name">Ảnh vệ tinh</span>
+          </label>
+
+          <label class="layer-item">
+            <input type="radio" name="basemap" value="topo" />
+            <span class="layer-icon topo-icon"><i class="fas fa-mountain"></i></span>
+            <span class="layer-name">Địa hình</span>
+          </label>
+        </div>
+
+        <!-- Layer WMS từ GeoServer -->
+        <div class="layer-group">
+          <div class="layer-group-title">Dữ liệu GeoServer</div>
+
+          <!-- Layer Hành chính -->
+          <div class="layer-item-wms">
+            <label class="toggle-switch">
+              <input type="checkbox" id="layerBacgiang" checked />
+              <span class="toggle-slider"></span>
+            </label>
+            <span class="layer-icon poly-icon"><i class="fas fa-draw-polygon"></i></span>
+            <span class="layer-name">Hành chính</span>
+            <div class="layer-actions">
+              <button class="layer-btn" onclick="zoomToLayer('bacgiang')" title="Zoom đến layer">
+                <i class="fas fa-crosshairs"></i>
+              </button>
+              <button class="layer-btn" onclick="toggleLayerOpacity('bacgiang')" title="Độ trong suốt">
+                <i class="fas fa-adjust"></i>
+              </button>
+            </div>
+          </div>
+
+          <!-- Thanh opacity cho layer hành chính -->
+          <div class="opacity-control" id="opacity-bacgiang">
+            <label>Độ trong suốt: <span id="opacity-val-bacgiang">70%</span></label>
+            <input type="range" min="0" max="100" value="70"
+              oninput="setLayerOpacity('bacgiang', this.value)" />
+          </div>
+
+          <!-- Layer Trường học -->
+          <div class="layer-item-wms">
+            <label class="toggle-switch">
+              <input type="checkbox" id="layerTruonghoc" checked />
+              <span class="toggle-slider"></span>
+            </label>
+            <span class="layer-icon point-icon"><i class="fas fa-school"></i></span>
+            <span class="layer-name">Trường học</span>
+            <div class="layer-actions">
+              <button class="layer-btn" onclick="zoomToLayer('truonghoc')" title="Zoom đến layer">
+                <i class="fas fa-crosshairs"></i>
+              </button>
+              <button class="layer-btn" onclick="toggleLayerOpacity('truonghoc')" title="Độ trong suốt">
+                <i class="fas fa-adjust"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="opacity-control" id="opacity-truonghoc">
+            <label>Độ trong suốt: <span id="opacity-val-truonghoc">100%</span></label>
+            <input type="range" min="0" max="100" value="100"
+              oninput="setLayerOpacity('truonghoc', this.value)" />
+          </div>
+
+          <!-- Layer Giao thông -->
+          <div class="layer-item-wms">
+            <label class="toggle-switch">
+              <input type="checkbox" id="layerGiaothong" checked />
+              <span class="toggle-slider"></span>
+            </label>
+            <span class="layer-icon line-icon"><i class="fas fa-road"></i></span>
+            <span class="layer-name">Giao thông</span>
+            <div class="layer-actions">
+              <button class="layer-btn" onclick="zoomToLayer('giaothong')" title="Zoom đến layer">
+                <i class="fas fa-crosshairs"></i>
+              </button>
+              <button class="layer-btn" onclick="toggleLayerOpacity('giaothong')" title="Độ trong suốt">
+                <i class="fas fa-adjust"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="opacity-control" id="opacity-giaothong">
+            <label>Độ trong suốt: <span id="opacity-val-giaothong">100%</span></label>
+            <input type="range" min="0" max="100" value="100"
+              oninput="setLayerOpacity('giaothong', this.value)" />
+          </div>
+        </div>
+      </div>
+
+      <!-- ---- PHẦN 2: CHÚ GIẢI ---- -->
+      <div class="sidebar-section">
+        <div class="section-header">
+          <i class="fas fa-list-ul"></i>
+          <span>Chú giải</span>
+        </div>
+        <div class="legend">
+          <div class="legend-title">Hành chính</div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#FF8C42; border:2px solid #CC5500;"></span>
+            <span>Thành phố</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-color" style="background:#A8D5A2; border:2px solid #2D6A4F;"></span>
+            <span>Huyện</span>
+          </div>
+
+          <div class="legend-title" style="margin-top:10px;">Trường học</div>
+          <div class="legend-item">
+            <span class="legend-dot" style="background:#8E44AD;"></span>
+            <span>★ Đại học</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-dot" style="background:#E74C3C;"></span>
+            <span>● THPT</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-dot" style="background:#2980B9;"></span>
+            <span>■ THCS</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-dot" style="background:#27AE60;"></span>
+            <span>▲ Tiểu học</span>
+          </div>
+
+          <div class="legend-title" style="margin-top:10px;">Giao thông</div>
+          <div class="legend-item">
+            <span class="legend-line" style="background:#FF4444; height:4px;"></span>
+            <span>Cao tốc</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-line" style="background:#FF8C00; height:3px;"></span>
+            <span>Quốc lộ</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-line" style="background:#FFD700; height:2px;"></span>
+            <span>Tỉnh lộ</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-line" style="background:#CCCCCC; height:2px;"></span>
+            <span>Đường đô thị</span>
+          </div>
+          <div class="legend-item">
+            <span class="legend-line" style="background:#2E7D32; height:2px; border-top:2px dashed #2E7D32; background:none;"></span>
+            <span>Huyện lộ</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ---- PHẦN 3: THỐNG KÊ NHANH ---- -->
+      <div class="sidebar-section">
+        <div class="section-header">
+          <i class="fas fa-chart-bar"></i>
+          <span>Thống kê</span>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-icon"><i class="fas fa-map-marker-alt"></i></div>
+            <div class="stat-info">
+              <div class="stat-value" id="statHuyen">10</div>
+              <div class="stat-label">Huyện/TP</div>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon"><i class="fas fa-school"></i></div>
+            <div class="stat-info">
+              <div class="stat-value" id="statTruong">20</div>
+              <div class="stat-label">Trường học</div>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon"><i class="fas fa-road"></i></div>
+            <div class="stat-info">
+              <div class="stat-value" id="statDuong">12</div>
+              <div class="stat-label">Tuyến đường</div>
+            </div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon"><i class="fas fa-ruler-horizontal"></i></div>
+            <div class="stat-info">
+              <div class="stat-value" id="statKm">342</div>
+              <div class="stat-label">km đường</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- ============================================================
+         BẢN ĐỒ CHÍNH
+         ============================================================ -->
+    <main class="map-container">
+
+      <!-- Phần tử bản đồ OpenLayers -->
+      <div id="map"></div>
+
+      <!-- ---- THANH CÔNG CỤ BẢN ĐỒ ---- -->
+      <div class="map-toolbar">
+        <button class="tool-btn active" id="toolPan" title="Di chuyển bản đồ (Pan)">
+          <i class="fas fa-hand-paper"></i>
+        </button>
+        <button class="tool-btn" id="toolZoomIn" title="Phóng to">
+          <i class="fas fa-plus"></i>
+        </button>
+        <button class="tool-btn" id="toolZoomOut" title="Thu nhỏ">
+          <i class="fas fa-minus"></i>
+        </button>
+        <div class="tool-divider"></div>
+        <button class="tool-btn" id="toolHome" title="Về vị trí ban đầu">
+          <i class="fas fa-home"></i>
+        </button>
+        <button class="tool-btn" id="toolFullscreen" title="Toàn màn hình">
+          <i class="fas fa-expand"></i>
+        </button>
+        <div class="tool-divider"></div>
+        <button class="tool-btn" id="toolMeasure" title="Đo khoảng cách">
+          <i class="fas fa-ruler"></i>
+        </button>
+        <button class="tool-btn" id="toolPrint" title="In bản đồ">
+          <i class="fas fa-print"></i>
+        </button>
+      </div>
+
+      <!-- ---- THANH TRẠNG THÁI (tọa độ, zoom) ---- -->
+      <div class="map-statusbar">
+        <span class="status-item">
+          <i class="fas fa-crosshairs"></i>
+          <span id="coordDisplay">Tọa độ: ---</span>
+        </span>
+        <span class="status-item">
+          <i class="fas fa-search-plus"></i>
+          <span id="zoomDisplay">Zoom: ---</span>
+        </span>
+        <span class="status-item">
+          <i class="fas fa-globe-asia"></i>
+          <span>WGS84 / EPSG:4326</span>
+        </span>
+      </div>
+
+      <!-- ---- LOADING OVERLAY ---- -->
+      <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner">
+          <i class="fas fa-spinner fa-spin"></i>
+          <span>Đang tải bản đồ...</span>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ============================================================
+       POPUP — Hiển thị thông tin khi click vào đối tượng
+       ============================================================ -->
+  <div id="popup" class="popup hidden">
+    <div class="popup-header">
+      <span id="popupTitle" class="popup-title">Thông tin</span>
+      <button class="popup-close" id="popupClose" title="Đóng">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <div id="popupContent" class="popup-content">
+      <!-- Nội dung được điền động bởi JavaScript -->
+    </div>
+    <div class="popup-footer">
+      <button class="popup-btn" id="popupZoom">
+        <i class="fas fa-search-plus"></i> Zoom đến
+      </button>
+      <button class="popup-btn" id="popupInfo">
+        <i class="fas fa-info-circle"></i> Chi tiết
+      </button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       MODAL THÔNG TIN HỆ THỐNG
+       ============================================================ -->
+  <div id="infoModal" class="modal hidden">
+    <div class="modal-overlay" id="modalOverlay"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2><i class="fas fa-info-circle"></i> Thông tin hệ thống</h2>
+        <button class="modal-close" id="modalClose">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <h3>WebGIS Bắc Giang</h3>
+        <p>Hệ thống bản đồ trực tuyến quản lý hành chính và giao thông tỉnh Bắc Giang.</p>
+        <table class="info-table">
+          <tr><th>Công nghệ</th><th>Phiên bản</th></tr>
+          <tr><td>OpenLayers</td><td>9.2.4</td></tr>
+          <tr><td>GeoServer</td><td>2.24.x</td></tr>
+          <tr><td>PostgreSQL</td><td>15.x</td></tr>
+          <tr><td>PostGIS</td><td>3.4.x</td></tr>
+          <tr><td>Hệ tọa độ</td><td>WGS84 (EPSG:4326)</td></tr>
+        </table>
+        <h3 style="margin-top:16px;">Dữ liệu</h3>
+        <ul>
+          <li>Ranh giới hành chính: 10 huyện/TP tỉnh Bắc Giang</li>
+          <li>Trường học: 20 điểm trường các cấp</li>
+          <li>Giao thông: 12 tuyến đường chính</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- OpenLayers 9 JS -->
+  <script src="https://cdn.jsdelivr.net/npm/ol@9.2.4/dist/ol.js"></script>
+
+  <!-- JavaScript chính của ứng dụng -->
+  <script src="main.js"></script>
+
+</body>
+</html>
