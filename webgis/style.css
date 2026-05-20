@@ -228,6 +228,42 @@ html, body {
   color: #64748B;
 }
 
+/* Kết quả tìm kiếm mới (GeoJSON inline search) */
+.result-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.result-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1E293B;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.result-sub {
+  font-size: 11px;
+  color: #64748B;
+  margin-top: 1px;
+}
+
+.search-result-item.no-result {
+  color: #94A3B8;
+  font-size: 12px;
+  justify-content: center;
+  cursor: default;
+}
+
+.search-result-item i {
+  font-size: 14px;
+  color: #64748B;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+
 .header-btn {
   width: 36px;
   height: 36px;
