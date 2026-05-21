@@ -977,55 +977,48 @@ try {
   const shpLayers = {};
 
   /**
-   * Đọc một file .shp và thêm vào bản đồ dưới dạng ol.layer.Vector
-   * @param {string} url       - Đường dẫn đến file .shp
-   * @param {string} layerKey  - Tên key để lưu trong shpLayers
-   * @param {ol.style.Style|Function} style - Style cho layer
-   * @param {number} zIndex    - Thứ tự hiển thị
-   * @param {string} checkboxId - ID checkbox trong sidebar
-   * @returns {Promise<ol.layer.Vector>}
+   * Đọc file .shp + .dbf bằng shpjs và thêm vào bản đồ
+   * shpjs nhận URL (không có extension) → tự fetch cả .shp và .dbf
+   * @param {string} baseUrl   - URL không có extension, VD: 'data/hwBG'
+   * @param {string} layerKey  - Key lưu trong shpLayers
+   * @param {ol.style.Style|Function} style
+   * @param {number} zIndex
+   * @param {string} checkboxId
+   * @returns {Promise<ol.layer.Vector|null>}
    */
-  async function loadShapefile(url, layerKey, style, zIndex, checkboxId) {
+  async function loadShapefile(baseUrl, layerKey, style, zIndex, checkboxId) {
     try {
-      // Fetch file .shp dưới dạng ArrayBuffer
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status} khi tải ${url}`);
-      const buffer = await response.arrayBuffer();
+      // shpjs v6: shp(url_without_extension) → Promise<GeoJSON FeatureCollection>
+      // Tự động fetch <url>.shp và <url>.dbf
+      const geojson = await shp(baseUrl);
 
-      // Đọc shapefile bằng thư viện shapefile.js
-      // shapefile.read trả về GeoJSON FeatureCollection
-      const geojson = await shapefile.read(buffer);
+      // shp() trả về FeatureCollection hoặc mảng FeatureCollection
+      const fc = Array.isArray(geojson) ? geojson[0] : geojson;
 
-      if (!geojson || !geojson.features || geojson.features.length === 0) {
-        console.warn(`${layerKey}: không có feature nào trong file SHP`);
-        return null;
+      if (!fc || !fc.features || fc.features.length === 0) {
+        throw new Error('Không có feature nào trong file SHP');
       }
 
-      console.log(`${layerKey}: đọc được ${geojson.features.length} features`);
+      console.log(`✅ ${layerKey}: ${fc.features.length} features`);
 
-      // Chuyển GeoJSON sang OpenLayers features
-      // SHP thường dùng EPSG:4326 hoặc EPSG:32648 — thử 4326 trước
-      const olFeatures = new ol.format.GeoJSON().readFeatures(geojson, {
+      // shpjs trả về WGS84 (EPSG:4326) → chuyển sang EPSG:3857 cho OpenLayers
+      const olFeatures = new ol.format.GeoJSON().readFeatures(fc, {
         dataProjection:    'EPSG:4326',
         featureProjection: 'EPSG:3857'
       });
 
-      // Tạo source và layer vector
       const source = new ol.source.Vector({ features: olFeatures });
       const layer  = new ol.layer.Vector({
-        source: source,
-        style:  style,
-        zIndex: zIndex,
+        source:  source,
+        style:   style,
+        zIndex:  zIndex,
         visible: true
       });
 
-      // Thêm layer vào bản đồ
       map.addLayer(layer);
-
-      // Lưu tham chiếu để dùng sau
       shpLayers[layerKey] = { layer, source };
 
-      // Gắn sự kiện checkbox toggle
+      // Gắn checkbox toggle
       const cb = document.getElementById(checkboxId);
       if (cb) {
         cb.addEventListener('change', function () {
@@ -1036,7 +1029,7 @@ try {
       return layer;
 
     } catch (err) {
-      console.error(`Lỗi khi tải shapefile ${layerKey}:`, err);
+      console.error(`❌ Lỗi tải SHP [${layerKey}]:`, err.message);
       return null;
     }
   }
@@ -1085,10 +1078,11 @@ try {
   }
 
   // Tải 3 file SHP song song
+  // shpjs nhận URL không có extension → tự fetch .shp + .dbf
   Promise.allSettled([
-    loadShapefile('data/UBNDBG.shp',  'ubnd',    styleUBND,    5,  'layerUBND'),
-    loadShapefile('data/hwBG.shp',    'highway', styleHighway, 8,  'layerHighway'),
-    loadShapefile('data/waterBG.shp', 'water',   styleWater,   6,  'layerWater')
+    loadShapefile('data/UBNDBG',  'ubnd',    styleUBND,    5,  'layerUBND'),
+    loadShapefile('data/hwBG',    'highway', styleHighway, 8,  'layerHighway'),
+    loadShapefile('data/waterBG', 'water',   styleWater,   6,  'layerWater')
   ]).then(function (results) {
     const loaded  = results.filter(r => r.status === 'fulfilled' && r.value).length;
     const failed  = results.length - loaded;
