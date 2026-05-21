@@ -977,30 +977,25 @@ try {
   const shpLayers = {};
 
   /**
-   * Đọc file .geojson và thêm vào bản đồ dưới dạng ol.layer.Vector
-   * Dùng fetch() thông thường — không cần thư viện ngoài
-   * @param {string} geojsonUrl - URL đến file .geojson
-   * @param {string} layerKey   - Key lưu trong shpLayers
+   * Tạo layer vector từ dữ liệu GeoJSON đã nhúng sẵn (biến JS toàn cục)
+   * Không dùng fetch() — chạy được cả file:// lẫn http://
+   * @param {Object} geojsonData - Biến GeoJSON (UBND_DATA / HIGHWAY_DATA / WATER_DATA)
+   * @param {string} layerKey
    * @param {ol.style.Style|Function} style
    * @param {number} zIndex
    * @param {string} checkboxId
-   * @returns {Promise<ol.layer.Vector|null>}
+   * @returns {ol.layer.Vector|null}
    */
-  async function loadShapefile(geojsonUrl, layerKey, style, zIndex, checkboxId) {
+  function loadGeoJSON(geojsonData, layerKey, style, zIndex, checkboxId) {
     try {
-      const resp = await fetch(geojsonUrl);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status} — ${geojsonUrl}`);
-
-      const geojson = await resp.json();
-
-      if (!geojson || !geojson.features || geojson.features.length === 0) {
+      if (!geojsonData || !geojsonData.features || geojsonData.features.length === 0) {
         throw new Error('Không có feature nào');
       }
 
-      console.log(`✅ ${layerKey}: ${geojson.features.length} features`);
+      console.log('OK ' + layerKey + ': ' + geojsonData.features.length + ' features');
 
-      // GeoJSON đã ở EPSG:4326 → chuyển sang EPSG:3857 cho OpenLayers
-      const olFeatures = new ol.format.GeoJSON().readFeatures(geojson, {
+      // GeoJSON ở EPSG:4326 → chuyển sang EPSG:3857 cho OpenLayers
+      const olFeatures = new ol.format.GeoJSON().readFeatures(geojsonData, {
         dataProjection:    'EPSG:4326',
         featureProjection: 'EPSG:3857'
       });
@@ -1027,7 +1022,7 @@ try {
       return layer;
 
     } catch (err) {
-      console.error(`❌ Lỗi tải GeoJSON [${layerKey}]:`, err.message);
+      console.error('Loi tai GeoJSON [' + layerKey + ']: ' + err.message);
       return null;
     }
   }
@@ -1075,25 +1070,26 @@ try {
       : `<i class="fas fa-check-circle" style="color:#27AE60;"></i> ${msg}`;
   }
 
-  // Tải 3 file GeoJSON (đã chuyển đổi từ SHP bằng convert_shp.py)
-  // Dùng fetch() thông thường — không cần thư viện ngoài
-  Promise.allSettled([
-    loadShapefile('data/UBNDBG.geojson',  'ubnd',    styleUBND,    5,  'layerUBND'),
-    loadShapefile('data/hwBG.geojson',    'highway', styleHighway, 8,  'layerHighway'),
-    loadShapefile('data/waterBG.geojson', 'water',   styleWater,   6,  'layerWater')
-  ]).then(function (results) {
-    const loaded  = results.filter(r => r.status === 'fulfilled' && r.value).length;
-    const failed  = results.length - loaded;
+  // Tải 3 layer từ dữ liệu GeoJSON đã nhúng sẵn trong geodata.js
+  // Không dùng fetch() — chạy được cả file:// lẫn http://
+  const shpResults = [
+    loadGeoJSON(typeof UBND_DATA    !== 'undefined' ? UBND_DATA    : null, 'ubnd',    styleUBND,    5, 'layerUBND'),
+    loadGeoJSON(typeof HIGHWAY_DATA !== 'undefined' ? HIGHWAY_DATA : null, 'highway', styleHighway, 8, 'layerHighway'),
+    loadGeoJSON(typeof WATER_DATA   !== 'undefined' ? WATER_DATA   : null, 'water',   styleWater,   6, 'layerWater')
+  ];
 
-    if (failed === 0) {
-      updateShpStatus(`Đã tải ${loaded}/3 layer SHP thành công`);
-    } else if (loaded > 0) {
-      updateShpStatus(`Tải ${loaded}/3 layer SHP (${failed} lỗi)`, false);
-    } else {
-      updateShpStatus('Không tải được file SHP. Kiểm tra thư mục data/', true);
-    }
+  const loaded = shpResults.filter(Boolean).length;
+  const failed = shpResults.length - loaded;
 
-    // Cập nhật hàm setLayerOpacity và zoomToLayer để hỗ trợ SHP layers
+  if (failed === 0) {
+    updateShpStatus('Da tai ' + loaded + '/3 layer thanh cong');
+  } else if (loaded > 0) {
+    updateShpStatus('Tai ' + loaded + '/3 layer (' + failed + ' loi)');
+  } else {
+    updateShpStatus('Khong tai duoc du lieu. Kiem tra geodata.js', true);
+  }
+
+  // Cập nhật hàm setLayerOpacity và zoomToLayer để hỗ trợ SHP layers
     const origSetOpacity = window.setLayerOpacity;
     window.setLayerOpacity = function (layerName, value) {
       // Xử lý SHP layers
@@ -1186,10 +1182,6 @@ try {
       popupEl.classList.remove('hidden');
       popupOverlay.setPosition(evt.coordinate);
     });
-
-  });
-
-
 
 // ============================================================
 // KẾT THÚC try/catch
