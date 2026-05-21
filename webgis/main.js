@@ -977,47 +977,21 @@ try {
   const shpLayers = {};
 
   /**
-   * Đọc file .shp bằng shpjs v3 và thêm vào bản đồ
-   * shpjs v3: shp.read(arrayBuffer) → GeoJSON FeatureCollection
-   * @param {string} shpUrl    - URL đến file .shp
-   * @param {string} layerKey  - Key lưu trong shpLayers
+   * Đọc file .geojson và thêm vào bản đồ dưới dạng ol.layer.Vector
+   * Dùng fetch() thông thường — không cần thư viện ngoài
+   * @param {string} geojsonUrl - URL đến file .geojson
+   * @param {string} layerKey   - Key lưu trong shpLayers
    * @param {ol.style.Style|Function} style
    * @param {number} zIndex
    * @param {string} checkboxId
    * @returns {Promise<ol.layer.Vector|null>}
    */
-  async function loadShapefile(shpUrl, layerKey, style, zIndex, checkboxId) {
+  async function loadShapefile(geojsonUrl, layerKey, style, zIndex, checkboxId) {
     try {
-      // Fetch file .shp dưới dạng ArrayBuffer
-      const resp = await fetch(shpUrl);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status} — ${shpUrl}`);
-      const buf = await resp.arrayBuffer();
+      const resp = await fetch(geojsonUrl);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} — ${geojsonUrl}`);
 
-      // shpjs v3: shp.read(ArrayBuffer) → GeoJSON FeatureCollection
-      // Chỉ cần file .shp, không cần .dbf
-      // Thử nhiều API vì các version khác nhau có tên hàm khác nhau
-      let geojson;
-      if (typeof shp === 'function') {
-        // shpjs v4+: shp(buffer) trả về Promise
-        geojson = await Promise.resolve(shp(buf));
-      } else if (shp && typeof shp.read === 'function') {
-        // shpjs v3: shp.read(buffer)
-        geojson = shp.read(buf);
-      } else if (shp && typeof shp.parseShp === 'function') {
-        // shpjs v2: shp.parseShp(buffer)
-        const shapes = shp.parseShp(buf);
-        geojson = {
-          type: 'FeatureCollection',
-          features: shapes.map(function(s, i) {
-            return { type: 'Feature', properties: { id: i }, geometry: s };
-          })
-        };
-      } else {
-        throw new Error('Không tìm thấy API shpjs phù hợp. Kiểm tra thư viện đã load chưa.');
-      }
-
-      // Nếu trả về array (nhiều layer trong 1 file), lấy cái đầu tiên
-      if (Array.isArray(geojson)) geojson = geojson[0];
+      const geojson = await resp.json();
 
       if (!geojson || !geojson.features || geojson.features.length === 0) {
         throw new Error('Không có feature nào');
@@ -1025,7 +999,7 @@ try {
 
       console.log(`✅ ${layerKey}: ${geojson.features.length} features`);
 
-      // shpjs trả về WGS84 (EPSG:4326) → chuyển sang EPSG:3857
+      // GeoJSON đã ở EPSG:4326 → chuyển sang EPSG:3857 cho OpenLayers
       const olFeatures = new ol.format.GeoJSON().readFeatures(geojson, {
         dataProjection:    'EPSG:4326',
         featureProjection: 'EPSG:3857'
@@ -1053,7 +1027,7 @@ try {
       return layer;
 
     } catch (err) {
-      console.error(`❌ Lỗi tải SHP [${layerKey}]:`, err.message);
+      console.error(`❌ Lỗi tải GeoJSON [${layerKey}]:`, err.message);
       return null;
     }
   }
@@ -1101,12 +1075,12 @@ try {
       : `<i class="fas fa-check-circle" style="color:#27AE60;"></i> ${msg}`;
   }
 
-  // Tải 3 file SHP song song
-  // shpjs v3: shp.read(ArrayBuffer) — chỉ cần file .shp
+  // Tải 3 file GeoJSON (đã chuyển đổi từ SHP bằng convert_shp.py)
+  // Dùng fetch() thông thường — không cần thư viện ngoài
   Promise.allSettled([
-    loadShapefile('data/UBNDBG.shp',  'ubnd',    styleUBND,    5,  'layerUBND'),
-    loadShapefile('data/hwBG.shp',    'highway', styleHighway, 8,  'layerHighway'),
-    loadShapefile('data/waterBG.shp', 'water',   styleWater,   6,  'layerWater')
+    loadShapefile('data/UBNDBG.geojson',  'ubnd',    styleUBND,    5,  'layerUBND'),
+    loadShapefile('data/hwBG.geojson',    'highway', styleHighway, 8,  'layerHighway'),
+    loadShapefile('data/waterBG.geojson', 'water',   styleWater,   6,  'layerWater')
   ]).then(function (results) {
     const loaded  = results.filter(r => r.status === 'fulfilled' && r.value).length;
     const failed  = results.length - loaded;
