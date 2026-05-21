@@ -977,32 +977,34 @@ try {
   const shpLayers = {};
 
   /**
-   * Đọc file .shp + .dbf bằng shpjs và thêm vào bản đồ
-   * shpjs nhận URL (không có extension) → tự fetch cả .shp và .dbf
-   * @param {string} baseUrl   - URL không có extension, VD: 'data/hwBG'
+   * Đọc file .shp bằng shpjs v3 và thêm vào bản đồ
+   * shpjs v3: shp.read(arrayBuffer) → GeoJSON FeatureCollection
+   * @param {string} shpUrl    - URL đến file .shp
    * @param {string} layerKey  - Key lưu trong shpLayers
    * @param {ol.style.Style|Function} style
    * @param {number} zIndex
    * @param {string} checkboxId
    * @returns {Promise<ol.layer.Vector|null>}
    */
-  async function loadShapefile(baseUrl, layerKey, style, zIndex, checkboxId) {
+  async function loadShapefile(shpUrl, layerKey, style, zIndex, checkboxId) {
     try {
-      // shpjs v6: shp(url_without_extension) → Promise<GeoJSON FeatureCollection>
-      // Tự động fetch <url>.shp và <url>.dbf
-      const geojson = await shp(baseUrl);
+      // Fetch file .shp dưới dạng ArrayBuffer
+      const resp = await fetch(shpUrl);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} — ${shpUrl}`);
+      const buf = await resp.arrayBuffer();
 
-      // shp() trả về FeatureCollection hoặc mảng FeatureCollection
-      const fc = Array.isArray(geojson) ? geojson[0] : geojson;
+      // shpjs v3: shp.read(ArrayBuffer) → GeoJSON FeatureCollection
+      // Chỉ cần file .shp, không cần .dbf
+      const geojson = shp.read(buf);
 
-      if (!fc || !fc.features || fc.features.length === 0) {
-        throw new Error('Không có feature nào trong file SHP');
+      if (!geojson || !geojson.features || geojson.features.length === 0) {
+        throw new Error('Không có feature nào');
       }
 
-      console.log(`✅ ${layerKey}: ${fc.features.length} features`);
+      console.log(`✅ ${layerKey}: ${geojson.features.length} features`);
 
-      // shpjs trả về WGS84 (EPSG:4326) → chuyển sang EPSG:3857 cho OpenLayers
-      const olFeatures = new ol.format.GeoJSON().readFeatures(fc, {
+      // shpjs trả về WGS84 (EPSG:4326) → chuyển sang EPSG:3857
+      const olFeatures = new ol.format.GeoJSON().readFeatures(geojson, {
         dataProjection:    'EPSG:4326',
         featureProjection: 'EPSG:3857'
       });
@@ -1078,11 +1080,11 @@ try {
   }
 
   // Tải 3 file SHP song song
-  // shpjs nhận URL không có extension → tự fetch .shp + .dbf
+  // shpjs v3: shp.read(ArrayBuffer) — chỉ cần file .shp
   Promise.allSettled([
-    loadShapefile('data/UBNDBG',  'ubnd',    styleUBND,    5,  'layerUBND'),
-    loadShapefile('data/hwBG',    'highway', styleHighway, 8,  'layerHighway'),
-    loadShapefile('data/waterBG', 'water',   styleWater,   6,  'layerWater')
+    loadShapefile('data/UBNDBG.shp',  'ubnd',    styleUBND,    5,  'layerUBND'),
+    loadShapefile('data/hwBG.shp',    'highway', styleHighway, 8,  'layerHighway'),
+    loadShapefile('data/waterBG.shp', 'water',   styleWater,   6,  'layerWater')
   ]).then(function (results) {
     const loaded  = results.filter(r => r.status === 'fulfilled' && r.value).length;
     const failed  = results.length - loaded;
