@@ -995,7 +995,29 @@ try {
 
       // shpjs v3: shp.read(ArrayBuffer) → GeoJSON FeatureCollection
       // Chỉ cần file .shp, không cần .dbf
-      const geojson = shp.read(buf);
+      // Thử nhiều API vì các version khác nhau có tên hàm khác nhau
+      let geojson;
+      if (typeof shp === 'function') {
+        // shpjs v4+: shp(buffer) trả về Promise
+        geojson = await Promise.resolve(shp(buf));
+      } else if (shp && typeof shp.read === 'function') {
+        // shpjs v3: shp.read(buffer)
+        geojson = shp.read(buf);
+      } else if (shp && typeof shp.parseShp === 'function') {
+        // shpjs v2: shp.parseShp(buffer)
+        const shapes = shp.parseShp(buf);
+        geojson = {
+          type: 'FeatureCollection',
+          features: shapes.map(function(s, i) {
+            return { type: 'Feature', properties: { id: i }, geometry: s };
+          })
+        };
+      } else {
+        throw new Error('Không tìm thấy API shpjs phù hợp. Kiểm tra thư viện đã load chưa.');
+      }
+
+      // Nếu trả về array (nhiều layer trong 1 file), lấy cái đầu tiên
+      if (Array.isArray(geojson)) geojson = geojson[0];
 
       if (!geojson || !geojson.features || geojson.features.length === 0) {
         throw new Error('Không có feature nào');
