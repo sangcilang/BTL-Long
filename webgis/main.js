@@ -967,6 +967,238 @@ try {
     map.getTargetElement().style.cursor = hit ? 'pointer' : '';
   });
 
+  // ----------------------------------------------------------
+  // 19. ĐỌC FILE SHAPEFILE (.shp) TRỰC TIẾP TRONG TRÌNH DUYỆT
+  //     Dùng thư viện shapefile.js (đã include trong index.html)
+  //     File SHP đặt trong thư mục webgis/data/
+  // ----------------------------------------------------------
+
+  // Lưu trữ các layer SHP để dùng trong toggle/opacity/zoom
+  const shpLayers = {};
+
+  /**
+   * Đọc một file .shp và thêm vào bản đồ dưới dạng ol.layer.Vector
+   * @param {string} url       - Đường dẫn đến file .shp
+   * @param {string} layerKey  - Tên key để lưu trong shpLayers
+   * @param {ol.style.Style|Function} style - Style cho layer
+   * @param {number} zIndex    - Thứ tự hiển thị
+   * @param {string} checkboxId - ID checkbox trong sidebar
+   * @returns {Promise<ol.layer.Vector>}
+   */
+  async function loadShapefile(url, layerKey, style, zIndex, checkboxId) {
+    try {
+      // Fetch file .shp dưới dạng ArrayBuffer
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status} khi tải ${url}`);
+      const buffer = await response.arrayBuffer();
+
+      // Đọc shapefile bằng thư viện shapefile.js
+      // shapefile.read trả về GeoJSON FeatureCollection
+      const geojson = await shapefile.read(buffer);
+
+      if (!geojson || !geojson.features || geojson.features.length === 0) {
+        console.warn(`${layerKey}: không có feature nào trong file SHP`);
+        return null;
+      }
+
+      console.log(`${layerKey}: đọc được ${geojson.features.length} features`);
+
+      // Chuyển GeoJSON sang OpenLayers features
+      // SHP thường dùng EPSG:4326 hoặc EPSG:32648 — thử 4326 trước
+      const olFeatures = new ol.format.GeoJSON().readFeatures(geojson, {
+        dataProjection:    'EPSG:4326',
+        featureProjection: 'EPSG:3857'
+      });
+
+      // Tạo source và layer vector
+      const source = new ol.source.Vector({ features: olFeatures });
+      const layer  = new ol.layer.Vector({
+        source: source,
+        style:  style,
+        zIndex: zIndex,
+        visible: true
+      });
+
+      // Thêm layer vào bản đồ
+      map.addLayer(layer);
+
+      // Lưu tham chiếu để dùng sau
+      shpLayers[layerKey] = { layer, source };
+
+      // Gắn sự kiện checkbox toggle
+      const cb = document.getElementById(checkboxId);
+      if (cb) {
+        cb.addEventListener('change', function () {
+          layer.setVisible(this.checked);
+        });
+      }
+
+      return layer;
+
+    } catch (err) {
+      console.error(`Lỗi khi tải shapefile ${layerKey}:`, err);
+      return null;
+    }
+  }
+
+  // Style cho layer UBND (ranh giới hành chính từ SHP)
+  const styleUBND = new ol.style.Style({
+    fill:   new ol.style.Fill({ color: 'rgba(106, 27, 154, 0.08)' }),
+    stroke: new ol.style.Stroke({
+      color: '#6A1B9A',
+      width: 2.5,
+      lineDash: [6, 3]
+    })
+  });
+
+  // Style cho layer Highway (đường giao thông từ SHP)
+  const styleHighway = new ol.style.Style({
+    stroke: new ol.style.Stroke({
+      color: '#E65100',
+      width: 2.5
+    })
+  });
+
+  // Style cho layer Water (sông/hồ từ SHP)
+  // Có thể là Polygon hoặc LineString tùy file
+  function styleWater(feature) {
+    const geomType = feature.getGeometry().getType();
+    if (geomType === 'Polygon' || geomType === 'MultiPolygon') {
+      return new ol.style.Style({
+        fill:   new ol.style.Fill({ color: 'rgba(21, 101, 192, 0.25)' }),
+        stroke: new ol.style.Stroke({ color: '#1565C0', width: 1.5 })
+      });
+    }
+    // LineString (sông)
+    return new ol.style.Style({
+      stroke: new ol.style.Stroke({ color: '#1565C0', width: 2 })
+    });
+  }
+
+  // Cập nhật trạng thái tải SHP
+  const shpStatus = document.getElementById('shpLoadStatus');
+  function updateShpStatus(msg, isError) {
+    if (!shpStatus) return;
+    shpStatus.innerHTML = isError
+      ? `<i class="fas fa-exclamation-triangle" style="color:#E74C3C;"></i> ${msg}`
+      : `<i class="fas fa-check-circle" style="color:#27AE60;"></i> ${msg}`;
+  }
+
+  // Tải 3 file SHP song song
+  Promise.allSettled([
+    loadShapefile('data/UBNDBG.shp',  'ubnd',    styleUBND,    5,  'layerUBND'),
+    loadShapefile('data/hwBG.shp',    'highway', styleHighway, 8,  'layerHighway'),
+    loadShapefile('data/waterBG.shp', 'water',   styleWater,   6,  'layerWater')
+  ]).then(function (results) {
+    const loaded  = results.filter(r => r.status === 'fulfilled' && r.value).length;
+    const failed  = results.length - loaded;
+
+    if (failed === 0) {
+      updateShpStatus(`Đã tải ${loaded}/3 layer SHP thành công`);
+    } else if (loaded > 0) {
+      updateShpStatus(`Tải ${loaded}/3 layer SHP (${failed} lỗi)`, false);
+    } else {
+      updateShpStatus('Không tải được file SHP. Kiểm tra thư mục data/', true);
+    }
+
+    // Cập nhật hàm setLayerOpacity và zoomToLayer để hỗ trợ SHP layers
+    const origSetOpacity = window.setLayerOpacity;
+    window.setLayerOpacity = function (layerName, value) {
+      // Xử lý SHP layers
+      if (shpLayers[layerName]) {
+        const opacity = parseFloat(value) / 100;
+        shpLayers[layerName].layer.setOpacity(opacity);
+        const valEl = document.getElementById('opacity-val-' + layerName);
+        if (valEl) valEl.textContent = Math.round(value) + '%';
+        return;
+      }
+      // Fallback về hàm gốc
+      origSetOpacity(layerName, value);
+    };
+
+    const origZoomTo = window.zoomToLayer;
+    window.zoomToLayer = function (layerName) {
+      if (shpLayers[layerName]) {
+        const extent = shpLayers[layerName].source.getExtent();
+        if (extent && !ol.extent.isEmpty(extent)) {
+          map.getView().fit(extent, {
+            padding:  [60, 60, 60, 60],
+            maxZoom:  14,
+            duration: 700
+          });
+        }
+        return;
+      }
+      origZoomTo(layerName);
+    };
+
+    // Cập nhật cursor khi hover SHP layers
+    map.on('pointermove', function (evt) {
+      if (evt.dragging) return;
+      const shpLayerList = Object.values(shpLayers).map(s => s.layer);
+      const hit = map.hasFeatureAtPixel(evt.pixel, {
+        layerFilter: l => shpLayerList.includes(l),
+        hitTolerance: 4
+      });
+      if (hit) map.getTargetElement().style.cursor = 'pointer';
+    });
+
+    // Click vào SHP features → hiện popup
+    map.on('singleclick', function (evt) {
+      const shpLayerList = Object.values(shpLayers).map(s => s.layer);
+      let shpFeature = null;
+      let shpLayerKey = null;
+
+      map.forEachFeatureAtPixel(evt.pixel, function (feature, layer) {
+        if (!shpFeature && shpLayerList.includes(layer)) {
+          shpFeature = feature;
+          // Tìm key của layer
+          for (const [key, val] of Object.entries(shpLayers)) {
+            if (val.layer === layer) { shpLayerKey = key; break; }
+          }
+        }
+      }, { hitTolerance: 6 });
+
+      if (!shpFeature) return;
+
+      // Tạo popup cho SHP feature
+      const props = shpFeature.getProperties();
+      // Lọc bỏ geometry khỏi props
+      const displayProps = Object.entries(props)
+        .filter(([k]) => k !== 'geometry')
+        .slice(0, 8); // Hiện tối đa 8 thuộc tính
+
+      const layerLabels = {
+        ubnd:    'Ranh giới UBND',
+        highway: 'Đường giao thông',
+        water:   'Sông/Hồ'
+      };
+
+      const titleEl   = document.getElementById('popupTitle');
+      const contentEl = document.getElementById('popupContent');
+      if (!titleEl || !contentEl) return;
+
+      titleEl.textContent = layerLabels[shpLayerKey] || 'Đối tượng SHP';
+
+      if (displayProps.length === 0) {
+        contentEl.innerHTML = '<p style="color:#64748B;font-size:12px;">Không có thuộc tính</p>';
+      } else {
+        contentEl.innerHTML = `
+          <table class="popup-table">
+            ${displayProps.map(([k, v]) =>
+              `<tr><th>${k}</th><td>${v !== null && v !== undefined ? v : '--'}</td></tr>`
+            ).join('')}
+          </table>`;
+      }
+
+      popupEl.classList.remove('hidden');
+      popupOverlay.setPosition(evt.coordinate);
+    });
+
+  });
+
+
+
 // ============================================================
 // KẾT THÚC try/catch
 // ============================================================
